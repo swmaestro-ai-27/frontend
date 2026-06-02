@@ -2,8 +2,7 @@
 - 
 
 ## 관련 이슈
-- Closes #
-
+- Closes #<issue-num>
 ## 확인 방법
 - 
 
