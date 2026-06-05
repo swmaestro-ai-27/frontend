@@ -29,11 +29,14 @@ export type TraceProbeResponse = {
 
 type ApiMessage = {
   id: number;
-  characterId: number;
-  sender: "user" | "character";
-  senderName: string;
+  characterId?: number;
+  character_id?: number;
+  user_id?: string;
+  sender: "user" | "character" | "me" | string;
+  senderName?: string;
   content: string;
-  createdAt: string;
+  createdAt?: string;
+  created_at?: string;
 };
 
 const PLAYER_ID_STORAGE_KEY = "demo-day-incident-player-id";
@@ -67,17 +70,21 @@ function getPlayerId() {
 
 function convertApiMessageToChatMessage(message: ApiMessage): ChatMessage {
   return {
-    speaker: message.sender === "user" ? "player" : "npc",
+    speaker:
+      message.sender === "user" || message.sender === "me" ? "player" : "npc",
     text: message.content,
   };
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const playerId = getPlayerId();
+
   const response = await fetch(url, {
     ...init,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "x-player-id": getPlayerId(),
+      "user-id": playerId,
+      "x-player-id": playerId,
       ...(init?.headers ?? {}),
     },
   });
@@ -110,7 +117,7 @@ export const gameApi = {
   },
 
   async markCharacterInteracted(characterId: number): Promise<void> {
-    await requestJson(`/api/characters/${characterId}`, {
+    await requestJson(`/api/character/${characterId}`, {
       method: "POST",
     });
   },
@@ -133,7 +140,7 @@ export const gameApi = {
 
   async getCharacterMessages(characterId: number): Promise<ChatMessage[]> {
     const data = await requestJson<{
-      characterId: number;
+      character_id: number;
       messages: ApiMessage[];
     }>(`/api/characters/${characterId}/messages`);
 
@@ -146,10 +153,7 @@ export const gameApi = {
   ): Promise<ChatMessage> {
     const data = await requestJson<{
       character_id: number;
-      sender: string;
       content: string;
-      id: number;
-      createdAt: string;
     }>(`/api/characters/${characterId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content }),
