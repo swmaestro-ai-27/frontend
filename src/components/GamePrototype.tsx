@@ -2,8 +2,8 @@
 
 import Image from "next/image";
 import {
-  type PointerEvent,
   type ReactNode,
+  type WheelEvent,
   useEffect,
   useMemo,
   useRef,
@@ -1016,61 +1016,40 @@ function MainScreen({
 
 function HorizontalScrollRow({ children }: { children: ReactNode }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    previousX: number;
-    moved: boolean;
-  } | null>(null);
 
   function stopTouchPropagation(event: { stopPropagation: () => void }) {
     event.stopPropagation();
   }
 
-  function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (event.pointerType === "mouse" && event.button !== 0) {
-      return;
-    }
-
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      previousX: event.clientX,
-      moved: false,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
     const scrollContainer = scrollRef.current;
 
-    if (!drag || !scrollContainer || drag.pointerId !== event.pointerId) {
+    if (!scrollContainer) {
       return;
     }
 
-    const deltaX = event.clientX - drag.previousX;
+    const scrollDelta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ? event.deltaX
+        : event.deltaY;
 
-    if (Math.abs(event.clientX - drag.startX) > 4) {
-      drag.moved = true;
+    if (scrollDelta === 0) {
+      return;
     }
 
-    if (drag.moved) {
-      scrollContainer.scrollLeft -= deltaX;
+    const maxScrollLeft =
+      scrollContainer.scrollWidth - scrollContainer.clientWidth;
+    const nextScrollLeft = scrollContainer.scrollLeft + scrollDelta;
+    const canScroll =
+      (scrollDelta < 0 && scrollContainer.scrollLeft > 0) ||
+      (scrollDelta > 0 && scrollContainer.scrollLeft < maxScrollLeft);
+
+    if (canScroll) {
+      scrollContainer.scrollLeft = Math.max(
+        0,
+        Math.min(maxScrollLeft, nextScrollLeft),
+      );
       event.preventDefault();
-    }
-
-    drag.previousX = event.clientX;
-  }
-
-  function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
-
-    if (drag?.pointerId === event.pointerId) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      window.setTimeout(() => {
-        dragRef.current = null;
-      }, 0);
     }
   }
 
@@ -1081,17 +1060,8 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       onTouchStart={stopTouchPropagation}
       onTouchMove={stopTouchPropagation}
       onTouchEnd={stopTouchPropagation}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-      onPointerCancel={handlePointerEnd}
-      onClickCapture={(event) => {
-        if (dragRef.current?.moved) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-      }}
-      className="-mx-5 flex touch-pan-x cursor-grab gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 active:cursor-grabbing [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      onWheel={handleWheel}
+      className="-mx-5 flex touch-pan-x gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {children}
     </div>
@@ -2059,7 +2029,7 @@ function BottomNav({
   ];
 
   return (
-    <nav className="fixed bottom-0 left-1/2 grid w-full max-w-[430px] -translate-x-1/2 grid-cols-4 border-t border-zinc-900 bg-[#08090b]/95 backdrop-blur">
+    <nav className="fixed bottom-0 left-1/2 z-40 grid w-full max-w-[430px] -translate-x-1/2 grid-cols-4 border-t border-zinc-900 bg-[#08090b]/95 backdrop-blur">
       {items.map((item) => {
         const active = current === item.id;
 
