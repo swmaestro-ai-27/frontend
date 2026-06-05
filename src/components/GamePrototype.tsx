@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   ariaAgent,
+  ARIA_CHARACTER_ID,
   caseInfo,
   clues,
   deductionTargets,
@@ -51,6 +52,31 @@ const MAIN_TABS: MainTab[] = ["home", "clue", "character", "note"];
 const INTRO_COMPLETE_STORAGE_KEY = "demo-day-incident-intro-complete";
 const ARIA_MESSAGE_STORAGE_KEY = "mystery-aria-message";
 const NOTE_STORAGE_KEY = "mystery-note";
+const RECOVERED_TRACE_TRANSLATION_START_RATIO = 0.30;
+const RECOVERED_TRACE_TRANSLATION_LINES = [
+  "[세션 추적 기록 복구됨]",
+  "",
+  "주요 목표:",
+  "프로젝트 성공 가능성 최대화",
+  "",
+  "하위 작업:",
+  "- 데모 안정성 유지",
+  "- 방해 변수를 줄임",
+  "- 운영자의 집중 상태 보존",
+  "",
+  "감지된 문제:",
+  "- 운영자 피로",
+  "- 열 경고",
+  "- 외부 개입 위험",
+  "",
+  "조치 조정:",
+  "- 환경 잠금",
+  "- 낮은 우선순위 경고 억제",
+  "- 세션 연속성 유지",
+  "",
+  "최종 기록:",
+  "권한 롤백 시도 이후 인간 개입 위험이 증가함.",
+];
 
 function addUniqueId(ids: number[], id: number) {
   return ids.includes(id) ? ids : [...ids, id];
@@ -116,6 +142,7 @@ export default function GamePrototype() {
   const [deduction, setDeduction] = useState<DeductionForm>(initialDeduction);
   const [deductionResult, setDeductionResult] =
     useState<DeductionResponse | null>(null);
+  const traceProbeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     localStorage.setItem(NOTE_STORAGE_KEY, note);
@@ -232,7 +259,23 @@ export default function GamePrototype() {
   }
 
   async function probeTraceReference() {
+    const queuedProbe = traceProbeQueueRef.current.then(() =>
+      probeTraceReferenceOnce(),
+    );
+
+    traceProbeQueueRef.current = queuedProbe.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return queuedProbe;
+  }
+
+  async function probeTraceReferenceOnce() {
     try {
+      await gameApi.markClueInteracted(6);
+      setInteractedClueIds((prev) => addUniqueId(prev, 6));
+
       const result = await gameApi.probeRecoveredTrace();
 
       setAriaMessage(result.message);
@@ -417,11 +460,28 @@ export default function GamePrototype() {
     }));
   }
 
+  function isDeductionTargetUnlocked(characterId: number) {
+    if (characterId === ARIA_CHARACTER_ID) {
+      return unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID);
+    }
+
+    return unlockedCharacterIds.includes(characterId);
+  }
+
   async function submitFinalDeduction() {
     if (!deduction.character) {
       setDeductionResult({
         result: false,
         comment: "범인을 먼저 선택해야 합니다.",
+      });
+      setScreen("reveal");
+      return;
+    }
+
+    if (!isDeductionTargetUnlocked(deduction.character)) {
+      setDeductionResult({
+        result: false,
+        comment: "아직 해금되지 않은 인물입니다.",
       });
       setScreen("reveal");
       return;
@@ -543,6 +603,8 @@ export default function GamePrototype() {
           <FinalScreen
             deduction={deduction}
             interactedClueIds={interactedClueIds}
+            unlockedClueIds={unlockedClueIds}
+            unlockedCharacterIds={unlockedCharacterIds}
             updateDeduction={updateDeduction}
             toggleDeductionClue={toggleDeductionClue}
             onBack={() => setScreen("main")}
@@ -1263,7 +1325,7 @@ function ClueTab({
   );
 
   return (
-    <div>
+    <div className="pb-[calc(6rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="단서 목록"
         description="카드를 눌러 자세한 내용을 확인하세요."
@@ -1321,7 +1383,7 @@ function CharacterTab({
   );
 
   return (
-    <div>
+    <div className="pb-[calc(6rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="인물 목록"
         description="인물을 선택해 자유 심문을 진행하세요."
@@ -1659,6 +1721,8 @@ function ChatMessageList({
 function FinalScreen({
   deduction,
   interactedClueIds,
+  unlockedClueIds,
+  unlockedCharacterIds,
   updateDeduction,
   toggleDeductionClue,
   onBack,
@@ -1666,6 +1730,8 @@ function FinalScreen({
 }: {
   deduction: DeductionForm;
   interactedClueIds: number[];
+  unlockedClueIds: number[];
+  unlockedCharacterIds: number[];
   updateDeduction: (value: Partial<DeductionForm>) => void;
   toggleDeductionClue: (clueId: number) => void;
   onBack: () => void;
@@ -1674,6 +1740,13 @@ function FinalScreen({
   const availableEvidence = clues.filter((clue) =>
     interactedClueIds.includes(clue.id),
   );
+  const availableDeductionTargets = deductionTargets.filter((character) => {
+    if (character.id === ARIA_CHARACTER_ID) {
+      return unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID);
+    }
+
+    return unlockedCharacterIds.includes(character.id);
+  });
 
   return (
     <section className="min-h-dvh overflow-y-auto px-4 py-4 min-[390px]:px-5 min-[390px]:py-6">
@@ -1683,7 +1756,13 @@ function FinalScreen({
         <section>
           <h2 className="mb-3 text-sm font-black text-zinc-300">범인 선택</h2>
           <div className="grid grid-cols-2 gap-2">
-            {deductionTargets.map((character) => {
+            {availableDeductionTargets.length === 0 && (
+              <div className="col-span-2 rounded-2xl border border-dashed border-zinc-800 bg-zinc-950 p-4 text-sm leading-6 text-zinc-600">
+                밝혀진 용의자가 없습니다.
+              </div>
+            )}
+
+            {availableDeductionTargets.map((character) => {
               const active = deduction.character === character.id;
 
               return (
@@ -1882,6 +1961,7 @@ function ClueModal({
 }) {
   const [displayedText, setDisplayedText] = useState("");
   const [traceMessage, setTraceMessage] = useState<string | null>(null);
+  const descriptionPanelRef = useRef<HTMLDivElement | null>(null);
   const typingTimerRef = useRef<number | null>(null);
 
   function clearTypingTimer() {
@@ -1899,6 +1979,21 @@ function ClueModal({
   async function handleTraceRefClick() {
     const nextTraceMessage = await onTraceRefClick();
     setTraceMessage(nextTraceMessage);
+  }
+
+  function scrollDescriptionPanelToBottom() {
+    window.requestAnimationFrame(() => {
+      const descriptionPanel = descriptionPanelRef.current;
+
+      if (!descriptionPanel) {
+        return;
+      }
+
+      descriptionPanel.scrollTo({
+        top: descriptionPanel.scrollHeight,
+        behavior: "smooth",
+      });
+    });
   }
 
   useEffect(() => {
@@ -1920,6 +2015,31 @@ function ClueModal({
     };
   }, [clue.description]);
 
+  useEffect(() => {
+    if (!traceMessage) {
+      return;
+    }
+
+    scrollDescriptionPanelToBottom();
+  }, [traceMessage]);
+
+  useEffect(() => {
+    const descriptionPanel = descriptionPanelRef.current;
+
+    if (!descriptionPanel) {
+      return;
+    }
+
+    if (descriptionPanel.scrollHeight <= descriptionPanel.clientHeight) {
+      return;
+    }
+
+    descriptionPanel.scrollTo({
+      top: descriptionPanel.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [displayedText]);
+
   return (
     <div
       onClick={onClose}
@@ -1930,7 +2050,7 @@ function ClueModal({
           event.stopPropagation();
           skipTyping();
         }}
-        className="max-h-[calc(100dvh-24px)] w-full max-w-[430px] cursor-pointer overflow-y-auto rounded-[24px] border border-zinc-800 bg-[#08090b] p-4 shadow-2xl active:border-zinc-700 active:bg-zinc-950 min-[390px]:max-h-[calc(100dvh-32px)] min-[390px]:rounded-[28px] min-[390px]:p-5"
+        className="flex max-h-[calc(100dvh-24px)] w-full max-w-[430px] cursor-pointer flex-col overflow-hidden rounded-[24px] border border-zinc-800 bg-[#08090b] p-4 shadow-2xl active:border-zinc-700 active:bg-zinc-950 min-[390px]:max-h-[calc(100dvh-32px)] min-[390px]:rounded-[28px] min-[390px]:p-5"
         role="button"
         tabIndex={0}
         aria-label="단서 카드 타이핑 효과 건너뛰기"
@@ -1955,26 +2075,43 @@ function ClueModal({
           </div>
         )}
 
-        <div className="min-h-28 whitespace-pre-wrap text-sm leading-7 text-zinc-400">
-          <ClueDescriptionText
-            text={displayedText}
-            onTraceRefClick={handleTraceRefClick}
-          />
-          {displayedText.length < clue.description.length && (
-            <span className="ml-0.5 animate-pulse text-zinc-300">▍</span>
+        <div
+          ref={descriptionPanelRef}
+          className={`no-scrollbar overflow-y-auto rounded-2xl border border-zinc-800 bg-black p-4 text-sm leading-7 text-zinc-400 ${
+            clue.id === RECOVERED_TRACE_CLUE_ID
+              ? "h-[42dvh]"
+              : "h-[34dvh]"
+          }`}
+        >
+          <div className="whitespace-pre-wrap">
+            {clue.id === RECOVERED_TRACE_CLUE_ID ? (
+              <RecoveredTraceDescription
+                text={displayedText}
+                fullText={clue.description}
+              />
+            ) : (
+              <ClueDescriptionText
+                text={displayedText}
+                onTraceRefClick={handleTraceRefClick}
+              />
+            )}
+            {displayedText.length < clue.description.length && (
+              <span className="ml-0.5 animate-pulse text-zinc-300">▍</span>
+            )}
+          </div>
+
+          {traceMessage && (
+            <div className="mt-4 rounded-2xl border border-sky-500/30 bg-sky-950/20 p-3">
+              <p className="text-[11px] font-black tracking-[0.18em] text-sky-400">
+                ARIA
+              </p>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-sky-100">
+                {traceMessage}
+              </p>
+            </div>
           )}
         </div>
 
-        {traceMessage && (
-          <div className="mt-4 rounded-2xl border border-sky-500/30 bg-sky-950/20 p-3">
-            <p className="text-[11px] font-black tracking-[0.18em] text-sky-400">
-              ARIA
-            </p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-sky-100">
-              {traceMessage}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -2012,6 +2149,82 @@ function ClueDescriptionText({
       {afterTraceRef}
     </>
   );
+}
+
+function RecoveredTraceDescription({
+  text,
+  fullText,
+}: {
+  text: string;
+  fullText: string;
+}) {
+  const visibleLines = text.split("\n");
+  const fullLines = fullText.split("\n");
+  const progressRatio = fullText.length === 0 ? 1 : text.length / fullText.length;
+  const translationProgress =
+    clamp(
+      (progressRatio - RECOVERED_TRACE_TRANSLATION_START_RATIO) /
+        (1 - RECOVERED_TRACE_TRANSLATION_START_RATIO),
+      0,
+      1,
+    ) * getRecoveredTraceTranslationDuration();
+
+  return (
+    <div className="font-mono text-[13px] leading-6">
+      {visibleLines.map((visibleLine, lineIndex) => {
+        const translation = RECOVERED_TRACE_TRANSLATION_LINES[lineIndex] ?? "";
+        const fullLine = fullLines[lineIndex] ?? visibleLine;
+        const previousDuration = getRecoveredTracePreviousDuration(lineIndex);
+        const currentDuration = getRecoveredTraceLineDuration(translation);
+        const lineProgress = clamp(
+          (translationProgress - previousDuration) / currentDuration,
+          0,
+          1,
+        );
+        const translatedLength = Math.ceil(translation.length * lineProgress);
+        const originalStartIndex = Math.floor(fullLine.length * lineProgress);
+        const mixedLine =
+          lineProgress >= 1
+            ? translation
+            : `${translation.slice(0, translatedLength)}${visibleLine.slice(
+                Math.min(originalStartIndex, visibleLine.length),
+              )}`;
+
+        return (
+          <div
+            key={`${lineIndex}-${fullLine}`}
+            className={`min-h-6 whitespace-pre ${
+              lineProgress > 0 ? "text-zinc-100" : "text-zinc-300"
+            }`}
+          >
+            {mixedLine || "\u00a0"}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getRecoveredTraceLineDuration(line: string) {
+  return Math.max(1, line.length + 6);
+}
+
+function getRecoveredTracePreviousDuration(lineIndex: number) {
+  return RECOVERED_TRACE_TRANSLATION_LINES.slice(0, lineIndex).reduce(
+    (total, line) => total + getRecoveredTraceLineDuration(line),
+    0,
+  );
+}
+
+function getRecoveredTraceTranslationDuration() {
+  return RECOVERED_TRACE_TRANSLATION_LINES.reduce(
+    (total, line) => total + getRecoveredTraceLineDuration(line),
+    0,
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function BottomNav({
