@@ -187,31 +187,6 @@ export const gameApi = {
     };
   },
 
-  async getAriaMessages(): Promise<ChatMessage[]> {
-    const data = await requestJson<{
-      messages: ApiMessage[];
-    }>("/api/aria/messages", undefined, "");
-
-    return data.messages.map(convertApiMessageToChatMessage);
-  },
-
-  async sendAriaMessage(content: string): Promise<ChatMessage> {
-    const data = await requestJson<{
-      sender: string;
-      content: string;
-      id: number;
-      createdAt: string;
-    }>("/api/aria/messages", {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    }, "");
-
-    return {
-      speaker: "npc",
-      text: data.content,
-    };
-  },
-
   async submitDeduction(
     request: DeductionRequest
   ): Promise<DeductionResponse> {

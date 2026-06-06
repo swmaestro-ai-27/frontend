@@ -10,7 +10,6 @@ import {
   useState,
 } from "react";
 import {
-  ariaAgent,
   caseInfo,
   clues,
   deductionTargets,
@@ -165,15 +164,10 @@ export default function GamePrototype() {
   );
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [isWaitingForChatReply, setIsWaitingForChatReply] = useState(false);
-  const [ariaInput, setAriaInput] = useState("");
-  const [ariaChatLog, setAriaChatLog] = useState<AnimatedChatMessage[]>([]);
-  const [isSendingAria, setIsSendingAria] = useState(false);
-  const [isWaitingForAriaReply, setIsWaitingForAriaReply] = useState(false);
   const [deduction, setDeduction] = useState<DeductionForm>(initialDeduction);
   const [deductionResult, setDeductionResult] =
     useState<DeductionResponse | null>(null);
   const chatTypingTimerRefs = useRef<Record<number, number | undefined>>({});
-  const ariaTypingTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem(NOTE_STORAGE_KEY, note);
@@ -193,9 +187,6 @@ export default function GamePrototype() {
         }
       });
 
-      if (ariaTypingTimerRef.current) {
-        window.clearInterval(ariaTypingTimerRef.current);
-      }
     };
   }, []);
 
@@ -206,21 +197,6 @@ export default function GamePrototype() {
 
     return chatLogs[selectedCharacter.id] ?? [];
   }, [chatLogs, selectedCharacter]);
-
-  async function loadAriaMessages() {
-    try {
-      const messages = await gameApi.getAriaMessages();
-      setAriaChatLog(messages);
-    } catch (error) {
-      console.error("[GamePrototype] ARIA 대화 로드 실패:", error);
-      setAriaChatLog([
-        {
-          speaker: "npc",
-          text: ariaAgent.firstMessage,
-        },
-      ]);
-    }
-  }
 
   async function loadInteractions() {
     try {
@@ -272,15 +248,6 @@ export default function GamePrototype() {
 
     window.clearInterval(timerId);
     chatTypingTimerRefs.current[characterId] = undefined;
-  }
-
-  function clearAriaTypingTimer() {
-    if (!ariaTypingTimerRef.current) {
-      return;
-    }
-
-    window.clearInterval(ariaTypingTimerRef.current);
-    ariaTypingTimerRef.current = null;
   }
 
   function createChatAnimationId() {
@@ -359,69 +326,6 @@ export default function GamePrototype() {
     });
   }
 
-  function typeNpcMessageIntoAriaLog(message: ChatMessage) {
-    return new Promise<void>((resolve) => {
-      clearAriaTypingTimer();
-
-      const animationId = createChatAnimationId();
-      const characters = Array.from(message.text);
-      const charactersPerTick = Math.max(
-        1,
-        Math.ceil(characters.length / CHAT_TYPING_MAX_TICKS),
-      );
-      let visibleCharacterCount = 0;
-
-      setAriaChatLog((prev) => [
-        ...prev,
-        {
-          ...message,
-          animationId,
-          isTyping: characters.length > 0,
-          text: "",
-        },
-      ]);
-
-      if (characters.length === 0) {
-        resolve();
-        return;
-      }
-
-      const updateTypingMessage = (nextText: string, isTyping: boolean) => {
-        setAriaChatLog((prev) =>
-          prev.map((chatMessage) =>
-            chatMessage.animationId === animationId
-              ? {
-                  ...chatMessage,
-                  text: nextText,
-                  isTyping,
-                }
-              : chatMessage,
-          ),
-        );
-      };
-
-      const timerId = window.setInterval(() => {
-        visibleCharacterCount = Math.min(
-          characters.length,
-          visibleCharacterCount + charactersPerTick,
-        );
-
-        const nextText = characters.slice(0, visibleCharacterCount).join("");
-
-        if (visibleCharacterCount >= characters.length) {
-          clearAriaTypingTimer();
-          updateTypingMessage(nextText, false);
-          resolve();
-          return;
-        }
-
-        updateTypingMessage(nextText, true);
-      }, CHAT_TYPING_INTERVAL_MS);
-
-      ariaTypingTimerRef.current = timerId;
-    });
-  }
-
   function completeIntro() {
     localStorage.setItem(INTRO_COMPLETE_STORAGE_KEY, "true");
     setScreen("main");
@@ -430,7 +334,6 @@ export default function GamePrototype() {
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
       void loadInteractions();
-      void loadAriaMessages();
     }, 0);
 
     return () => {
@@ -591,48 +494,6 @@ export default function GamePrototype() {
     }
   }
 
-  async function sendAriaQuestion() {
-    if (isSendingAria) {
-      return;
-    }
-
-    if (!ariaInput.trim()) {
-      return;
-    }
-
-    const question = ariaInput.trim();
-
-    setAriaInput("");
-    setIsSendingAria(true);
-    setIsWaitingForAriaReply(true);
-
-    setAriaChatLog((prev) => [
-      ...prev,
-      {
-        speaker: "player",
-        text: question,
-      },
-    ]);
-
-    try {
-      const ariaMessage = await gameApi.sendAriaMessage(question);
-
-      setIsWaitingForAriaReply(false);
-      await typeNpcMessageIntoAriaLog(ariaMessage);
-    } catch (error) {
-      console.error("[GamePrototype] ARIA 답변 생성 실패:", error);
-
-      setIsWaitingForAriaReply(false);
-      await typeNpcMessageIntoAriaLog({
-        speaker: "npc",
-        text: "현재 기록을 정리하는 중 문제가 발생했습니다. 잠시 후 다시 질문해 주세요.",
-      });
-    } finally {
-      setIsSendingAria(false);
-      setIsWaitingForAriaReply(false);
-    }
-  }
-
   function updateDeduction(value: Partial<DeductionForm>) {
     setDeduction((prev) => ({
       ...prev,
@@ -700,7 +561,6 @@ export default function GamePrototype() {
     Object.keys(chatTypingTimerRefs.current).forEach((characterId) => {
       clearCharacterTypingTimer(Number(characterId));
     });
-    clearAriaTypingTimer();
 
     try {
       await gameApi.resetProgress();
@@ -728,10 +588,6 @@ export default function GamePrototype() {
     setChatLogs({});
     setIsSendingChat(false);
     setIsWaitingForChatReply(false);
-    setAriaInput("");
-    setAriaChatLog([]);
-    setIsSendingAria(false);
-    setIsWaitingForAriaReply(false);
     setDeduction(initialDeduction);
     setDeductionResult(null);
   }
@@ -770,12 +626,6 @@ export default function GamePrototype() {
             chatLog={currentChatLog}
             isSendingChat={isSendingChat}
             isWaitingForChatReply={isWaitingForChatReply}
-            ariaInput={ariaInput}
-            setAriaInput={setAriaInput}
-            ariaChatLog={ariaChatLog}
-            isSendingAria={isSendingAria}
-            isWaitingForAriaReply={isWaitingForAriaReply}
-            onSendAria={sendAriaQuestion}
             onSendChat={sendQuestion}
             onSubmitFinal={() => setScreen("final")}
             onNewStart={startNewGame}
@@ -1049,12 +899,6 @@ function MainScreen({
   chatLog,
   isSendingChat,
   isWaitingForChatReply,
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  isWaitingForAriaReply,
-  onSendAria,
   onSendChat,
   onSubmitFinal,
   onNewStart,
@@ -1077,12 +921,6 @@ function MainScreen({
   chatLog: AnimatedChatMessage[];
   isSendingChat: boolean;
   isWaitingForChatReply: boolean;
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: AnimatedChatMessage[];
-  isSendingAria: boolean;
-  isWaitingForAriaReply: boolean;
-  onSendAria: () => void;
   onSendChat: () => void;
   onSubmitFinal: () => void;
   onNewStart: () => void;
@@ -1247,12 +1085,8 @@ function MainScreen({
             <NoteTab
               note={note}
               setNote={setNote}
-              ariaInput={ariaInput}
-              setAriaInput={setAriaInput}
-              ariaChatLog={ariaChatLog}
-              isSendingAria={isSendingAria}
-              isWaitingForAriaReply={isWaitingForAriaReply}
-              onSendAria={onSendAria}
+              interactedClueIds={interactedClueIds}
+              interactedCharacterIds={interactedCharacterIds}
             />
           )}
         </div>
@@ -1634,27 +1468,19 @@ function CharacterTab({
 function NoteTab({
   note,
   setNote,
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  isWaitingForAriaReply,
-  onSendAria,
+  interactedClueIds,
+  interactedCharacterIds,
 }: {
   note: string;
   setNote: (note: string) => void;
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: AnimatedChatMessage[];
-  isSendingAria: boolean;
-  isWaitingForAriaReply: boolean;
-  onSendAria: () => void;
+  interactedClueIds: number[];
+  interactedCharacterIds: number[];
 }) {
   return (
     <div className="space-y-5 pb-8">
       <SectionTitle
         title="수사 노트"
-        description="직접 기록하고, ARIA에게 지금까지의 용의자 대화를 정리받습니다."
+        description="직접 기록하고, ARIA가 남긴 단서 안내를 함께 검토합니다."
       />
 
       <section className="rounded-[28px] border border-zinc-800 bg-zinc-950 p-4">
@@ -1673,83 +1499,86 @@ function NoteTab({
         />
       </section>
 
-      <AriaSupportPanel
-        ariaInput={ariaInput}
-        setAriaInput={setAriaInput}
-        ariaChatLog={ariaChatLog}
-        isSendingAria={isSendingAria}
-        isWaitingForAriaReply={isWaitingForAriaReply}
-        onSendAria={onSendAria}
+      <AriaEvidencePanel
+        interactedClueIds={interactedClueIds}
+        interactedCharacterIds={interactedCharacterIds}
       />
     </div>
   );
 }
 
-function AriaSupportPanel({
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  isWaitingForAriaReply,
-  onSendAria,
+function AriaEvidencePanel({
+  interactedClueIds,
+  interactedCharacterIds,
 }: {
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: AnimatedChatMessage[];
-  isSendingAria: boolean;
-  isWaitingForAriaReply: boolean;
-  onSendAria: () => void;
+  interactedClueIds: number[];
+  interactedCharacterIds: number[];
 }) {
+  const reviewedClues = clues.filter((clue) =>
+    interactedClueIds.includes(clue.id),
+  );
+  const reviewedCharacters = interrogatableCharacters.filter((character) =>
+    interactedCharacterIds.includes(character.id),
+  );
+  const latestClue = reviewedClues.at(-1);
+
   return (
     <section
       data-swipe-ignore="true"
-      className="flex h-[min(420px,58dvh)] min-h-[320px] flex-col overflow-hidden rounded-[24px] border border-zinc-800 bg-zinc-950 p-4 min-[390px]:rounded-[28px]"
+      className="rounded-[24px] border border-zinc-800 bg-zinc-950 p-4 min-[390px]:rounded-[28px]"
     >
-      <div className="shrink-0">
+      <div>
         <p className="text-xs font-bold tracking-[0.18em] text-zinc-600">
-          ARIA SUPPORT
+          ARIA LOG
         </p>
-        <h3 className="mt-1 text-base font-black text-zinc-200">
-          대화 기록 정리
-        </h3>
-        <p className="mt-2 text-xs leading-5 text-zinc-600">
-          ARIA는 심문 대상이 아니라 조사 보조자입니다. 확인한 단서와 용의자별
-          대화 내용을 기준으로 정리합니다.
-        </p>
+        <h3 className="mt-1 text-base font-black text-zinc-200">단서 안내</h3>
       </div>
 
-      <div className="mt-3 min-h-0 flex-1 overflow-hidden">
-        <ChatMessageList
-          chatLog={ariaChatLog}
-          isSending={isWaitingForAriaReply}
-        />
-      </div>
-
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSendAria();
-        }}
-        className="relative z-10 mt-2 shrink-0 border-t border-zinc-800 bg-zinc-950 pt-3"
-      >
-        <div className="flex items-center gap-2">
-          <input
-            value={ariaInput}
-            onChange={(event) => setAriaInput(event.target.value)}
-            placeholder="ARIA에게 정리 요청"
-            disabled={isSendingAria}
-            className="h-12 min-w-0 flex-1 rounded-xl border border-zinc-800 bg-black px-4 text-sm outline-none placeholder:text-zinc-700 disabled:opacity-60"
-          />
-
-          <button
-            type="submit"
-            disabled={isSendingAria}
-            className="h-12 shrink-0 rounded-xl bg-zinc-100 px-4 text-sm font-black text-black active:scale-[0.99] disabled:opacity-60"
-          >
-            {isSendingAria ? "정리" : "전송"}
-          </button>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">확인 단서</p>
+          <p className="mt-1 text-xl font-black text-zinc-100">
+            {reviewedClues.length}
+          </p>
         </div>
-      </form>
+
+        <div className="rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">심문 인물</p>
+          <p className="mt-1 text-xl font-black text-zinc-100">
+            {reviewedCharacters.length}
+          </p>
+        </div>
+      </div>
+
+      {latestClue ? (
+        <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">최근 단서</p>
+          <p className="mt-1 text-sm font-bold text-zinc-200">
+            {latestClue.name}
+          </p>
+          <div className="mt-3 space-y-2">
+            {latestClue.ariaScripts.map((script) => (
+              <p key={script} className="text-sm leading-6 text-zinc-400">
+                {script}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-sm leading-6 text-zinc-500">
+            확인한 단서가 없습니다. 기본 단서를 먼저 열어보세요.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+        <p className="text-xs text-zinc-600">최종 추리 대상</p>
+        <p className="mt-1 text-sm leading-6 text-zinc-400">
+          ARIA는 심문 대상이 아니라 사건 원인 후보입니다. 최종 추리에서 ARIA를
+          지목하고 핵심 단서를 제출할 수 있습니다.
+        </p>
+      </div>
     </section>
   );
 }
