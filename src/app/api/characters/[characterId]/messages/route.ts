@@ -10,6 +10,14 @@ export async function GET(
   context: { params: Promise<{ characterId: string }> }
 ) {
   const playerId = getPlayerIdFromRequest(request);
+
+  if (!playerId) {
+    return NextResponse.json(
+      { detail: "X-User-Id header is required" },
+      { status: 422 },
+    );
+  }
+
   const { characterId } = await context.params;
   const numericCharacterId = Number(characterId);
 
@@ -19,13 +27,15 @@ export async function GET(
 
   const messages = getMessagesForCharacter(numericCharacterId, playerId);
 
-  if (!messages) {
-    return NextResponse.json({ message: "인물을 찾을 수 없습니다." }, { status: 404 });
-  }
-
   return NextResponse.json({
-    characterId: numericCharacterId,
-    messages,
+    character_id: numericCharacterId,
+    messages: messages.map((message) => ({
+      id: message.id,
+      user_id: playerId,
+      sender: message.sender === "user" ? "me" : message.senderName,
+      content: message.content,
+      createdAt: message.createdAt,
+    })),
   });
 }
 
@@ -34,6 +44,14 @@ export async function POST(
   context: { params: Promise<{ characterId: string }> }
 ) {
   const playerId = getPlayerIdFromRequest(request);
+
+  if (!playerId) {
+    return NextResponse.json(
+      { detail: "X-User-Id header is required" },
+      { status: 422 },
+    );
+  }
+
   const { characterId } = await context.params;
   const numericCharacterId = Number(characterId);
 
@@ -60,9 +78,6 @@ export async function POST(
 
   return NextResponse.json({
     character_id: numericCharacterId,
-    sender: reply.senderName,
     content: reply.content,
-    id: reply.id,
-    createdAt: reply.createdAt,
   });
 }

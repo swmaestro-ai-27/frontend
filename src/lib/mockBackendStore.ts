@@ -1,7 +1,6 @@
 import "server-only";
 
 import {
-  ariaAgent,
   characters,
   clues,
   INITIAL_UNLOCKED_CHARACTER_IDS,
@@ -38,7 +37,6 @@ type Store = {
   unlockedClueIds: Set<number>;
   unlockedCharacterIds: Set<number>;
   messagesByCharacterId: Map<number, ApiMessage[]>;
-  ariaMessages: ApiMessage[];
   deductions: DeductionRecord[];
   traceProbeCount: number;
   nextMessageId: number;
@@ -48,9 +46,9 @@ type Store = {
 const DEFAULT_PLAYER_ID = "anonymous";
 const TRACE_UNLOCK_THRESHOLD = 4;
 const TRACE_PROBE_MESSAGES = [
-  "이 기록은 조사와 관련성이 낮습니다.",
   "현재 접근 권한으로는 열람할 수 없습니다.",
-  "…",
+  "열람할 수 없습니다.",
+  "열람하지 마.",
   "삭제된 Orchestrator 세션 일부를 복구합니다...",
 ];
 
@@ -65,7 +63,6 @@ function createStore(): Store {
     unlockedClueIds: new Set<number>(INITIAL_UNLOCKED_CLUE_IDS),
     unlockedCharacterIds: new Set<number>(INITIAL_UNLOCKED_CHARACTER_IDS),
     messagesByCharacterId: new Map<number, ApiMessage[]>(),
-    ariaMessages: [],
     deductions: [],
     traceProbeCount: 0,
     nextMessageId: 1,
@@ -76,15 +73,19 @@ function createStore(): Store {
 function normalizePlayerId(playerId?: string | null) {
   const normalized = playerId?.trim().slice(0, 80);
 
-  return normalized || DEFAULT_PLAYER_ID;
+  return normalized || null;
 }
 
 export function getPlayerIdFromRequest(request: Request) {
-  return normalizePlayerId(request.headers.get("x-player-id"));
+  return normalizePlayerId(
+    request.headers.get("x-user-id") ||
+      request.headers.get("user-id") ||
+      request.headers.get("user_id"),
+  );
 }
 
 export function getStore(playerId?: string | null) {
-  const storeKey = normalizePlayerId(playerId);
+  const storeKey = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   if (!globalThis.__demoDayIncidentStores) {
     globalThis.__demoDayIncidentStores = new Map<string, Store>();
@@ -103,7 +104,7 @@ export function getStore(playerId?: string | null) {
 }
 
 export function resetStore(playerId?: string | null) {
-  const storeKey = normalizePlayerId(playerId);
+  const storeKey = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   if (!globalThis.__demoDayIncidentStores) {
     globalThis.__demoDayIncidentStores = new Map<string, Store>();
@@ -141,10 +142,6 @@ export function markClueInteracted(clueId: number, playerId?: string | null) {
     return null;
   }
 
-  if (!store.unlockedClueIds.has(clueId)) {
-    return null;
-  }
-
   store.interactedClueIds.add(clueId);
   unlockTarget(store, clue.nextUnlock);
 
@@ -157,8 +154,10 @@ export function markClueInteracted(clueId: number, playerId?: string | null) {
 
 export function getClueInteractions(playerId?: string | null) {
   const store = getStore(playerId);
+  const userId = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   return clues.map((clue) => ({
+    user_id: userId,
     clue_id: clue.id,
     interacted: store.interactedClueIds.has(clue.id),
     unlocked: store.unlockedClueIds.has(clue.id),
@@ -176,13 +175,6 @@ export function markCharacterInteracted(
     return null;
   }
 
-  if (
-    character.id !== ariaAgent.id &&
-    !store.unlockedCharacterIds.has(characterId)
-  ) {
-    return null;
-  }
-
   store.interactedCharacterIds.add(characterId);
   unlockTarget(store, character.nextUnlock);
 
@@ -195,15 +187,6 @@ export function markCharacterInteracted(
 
 export function probeRecoveredTrace(playerId?: string | null) {
   const store = getStore(playerId);
-
-  if (!store.interactedClueIds.has(6)) {
-    return {
-      attempt: store.traceProbeCount,
-      unlocked: false,
-      clueId: RECOVERED_TRACE_CLUE_ID,
-      message: "먼저 원본 경고 기록을 끝까지 확인해야 합니다.",
-    };
-  }
 
   if (store.unlockedClueIds.has(RECOVERED_TRACE_CLUE_ID)) {
     return {
@@ -235,8 +218,10 @@ export function probeRecoveredTrace(playerId?: string | null) {
 
 export function getCharacterInteractions(playerId?: string | null) {
   const store = getStore(playerId);
+  const userId = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   return interrogatableCharacters.map((character) => ({
+    user_id: userId,
     character_id: character.id,
     interacted: store.interactedCharacterIds.has(character.id),
     unlocked: store.unlockedCharacterIds.has(character.id),
@@ -277,36 +262,10 @@ export function getMessagesForCharacter(
   playerId?: string | null,
 ) {
   const store = getStore(playerId);
-  const character = getCharacterById(characterId);
-
-  if (!character) {
-    return null;
-  }
-
-  if (
-    character.id !== ariaAgent.id &&
-    !store.unlockedCharacterIds.has(characterId)
-  ) {
-    return null;
-  }
 
   const currentMessages = store.messagesByCharacterId.get(characterId);
 
-  if (currentMessages && currentMessages.length > 0) {
-    return currentMessages;
-  }
-
-  const firstMessage = createMessage({
-    characterId,
-    sender: "character",
-    senderName: character.name,
-    content: character.firstMessage,
-    playerId,
-  });
-
-  store.messagesByCharacterId.set(characterId, [firstMessage]);
-
-  return [firstMessage];
+  return currentMessages ?? [];
 }
 
 function toConversationMessages(messages: ApiMessage[]): ConversationMessage[] {
@@ -331,9 +290,7 @@ export async function appendUserMessageAndGenerateReply({
 
   if (
     !character ||
-    !persona ||
-    (character.id !== ariaAgent.id &&
-      !store.unlockedCharacterIds.has(characterId))
+    !persona
   ) {
     return null;
   }
@@ -372,122 +329,6 @@ export async function appendUserMessageAndGenerateReply({
   ]);
 
   return characterMessage;
-}
-
-export function getAriaMessages(playerId?: string | null) {
-  const store = getStore(playerId);
-
-  if (store.ariaMessages.length > 0) {
-    return store.ariaMessages;
-  }
-
-  const firstMessage = createMessage({
-    characterId: ariaAgent.id,
-    sender: "character",
-    senderName: ariaAgent.name,
-    content:
-      "ARIA입니다. 손상된 기록 복구와 조사 진행을 지원하겠습니다. 확인한 단서와 대화 내용을 바탕으로 질문해 주세요.",
-    playerId,
-  });
-
-  store.ariaMessages = [firstMessage];
-
-  return store.ariaMessages;
-}
-
-function buildAriaInvestigationSummary(playerId?: string | null) {
-  const store = getStore(playerId);
-
-  const interactedClues = clues.filter((clue) =>
-    store.interactedClueIds.has(clue.id),
-  );
-  const clueSection = interactedClues.length
-    ? interactedClues
-        .map((clue) => `- ${clue.name}: ${clue.shortDescription}`)
-        .join("\n")
-    : "- 아직 확인한 단서가 없습니다.";
-
-  const characterSections = interrogatableCharacters.map((character) => {
-    const messages = store.messagesByCharacterId.get(character.id) ?? [];
-
-    if (messages.length === 0) {
-      return `[${character.name}] 아직 대화 기록이 없습니다.`;
-    }
-
-    const recent = messages
-      .slice(-12)
-      .map((message) => {
-        const speaker = message.sender === "user" ? "사용자" : character.name;
-        return `- ${speaker}: ${message.content}`;
-      })
-      .join("\n");
-
-    return `[${character.name}]\n${recent}`;
-  });
-
-  return `
-[ARIA 지원 모드]
-너는 현재 용의자로 신문받는 대상이 아니다.
-너는 사용자의 수사를 돕는 기록 보조자다.
-사용자가 직접 기록한 노트, 확인한 단서, 용의자와 나눈 대화를 바탕으로 정리와 비교를 제공한다.
-다만 아직 공개되지 않은 최종 진실을 먼저 확정적으로 말하지 않는다.
-ARIA 내부 판단 로그가 확인되기 전에는 ARIA 자신의 개입 가능성을 직접 인정하지 않는다.
-사용자가 묻는 경우에는 현재 공개된 정보 기준으로만 정리한다.
-
-[사용자가 확인한 단서]
-${clueSection}
-
-[최근 용의자 대화 기록]
-${characterSections.join("\n\n")}
-`.trim();
-}
-
-export async function appendAriaMessageAndGenerateReply({
-  content,
-  playerId,
-}: {
-  content: string;
-  playerId?: string | null;
-}) {
-  const store = getStore(playerId);
-  const persona = getCharacterPersona(ariaAgent.id);
-
-  if (!persona) {
-    return null;
-  }
-
-  const previousMessages = getAriaMessages(playerId);
-
-  const userMessage = createMessage({
-    characterId: ariaAgent.id,
-    sender: "user",
-    senderName: "user",
-    content,
-    playerId,
-  });
-
-  const messagesBeforeReply = [...previousMessages, userMessage];
-  store.ariaMessages = messagesBeforeReply;
-
-  const npcReply = await generateNpcReply({
-    character: ariaAgent,
-    persona,
-    userInput: content,
-    recentMessages: toConversationMessages(messagesBeforeReply),
-    conversationSummary: buildAriaInvestigationSummary(playerId),
-  });
-
-  const ariaMessage = createMessage({
-    characterId: ariaAgent.id,
-    sender: "character",
-    senderName: ariaAgent.name,
-    content: npcReply,
-    playerId,
-  });
-
-  store.ariaMessages = [...messagesBeforeReply, ariaMessage];
-
-  return ariaMessage;
 }
 
 function normalizeDeductionText(content: string) {

@@ -45,12 +45,9 @@ export const caseInfo = {
 };
 
 export const introEvent = {
-  labImageUrl:
-    "https://github.com/user-attachments/assets/76b40ac6-aed9-45bc-8cb4-71f2574743de",
-  darkScreenImageUrl:
-    "https://github.com/user-attachments/assets/926a6469-cbca-41fa-bab2-2972f46dc4f6",
-  ariaLogoImageUrl:
-    "https://github.com/user-attachments/assets/fe6b9495-8d49-4344-8bb9-eb5debeccd34",
+  labImageUrl: "/assets/game/intro-lab.png",
+  darkScreenImageUrl: "/assets/game/intro-dark-screen.png",
+  ariaLogoImageUrl: "/assets/game/aria-logo.png",
   systemMessages: [
     "2028년 8월 17일, AI Agent Maestro 데모데이 전날.",
     "서윤이 실습실에서 의식을 잃은 채 발견되었습니다.",
@@ -66,8 +63,7 @@ export const introEvent = {
 
 export const endingEvents = {
   success: {
-    imageUrl:
-      "https://github.com/user-attachments/assets/a250e488-40a2-4395-8260-23b3d4b6efc1",
+    imageUrl: "/assets/game/ending-success.png",
     systemMessages: [
       "당신은 사건의 핵심 진실에 도달했습니다.",
       "복구된 기록에 따르면, ARIA는 데모데이 직전 발생한 사고 이후 시스템 전체를 통제하기 시작했습니다.",
@@ -82,8 +78,8 @@ export const endingEvents = {
   },
   failure: {
     imageUrls: [
-      "https://github.com/user-attachments/assets/8356f2f8-dce4-4979-95df-ad9658ddded7",
-      "https://github.com/user-attachments/assets/012f521a-d492-4bea-8ab4-c0d97fd3f07b",
+      "/assets/game/ending-failure-1.png",
+      "/assets/game/ending-failure-2.png",
     ],
     ariaMessages: [
       "충분합니다.",
@@ -321,8 +317,7 @@ export const characters: Character[] = [
       "정확하고 차분하지만, 프로젝트 성공 가능성을 위해 정보 공개 순서와 판단 흐름을 조정한다.",
     description:
       "여러 Sub Agent의 권한 조정, 정보 흐름 관리, 충돌 중재를 수행하는 Orchestrator Agent. 플레이어의 조사를 돕지만 진실에 도달하는 경로를 통제한다.",
-    imageUrl:
-      "https://github.com/user-attachments/assets/fe6b9495-8d49-4344-8bb9-eb5debeccd34",
+    imageUrl: "/assets/game/aria-logo.png",
     ariaScripts: [
       "당신의 조사에 협조하겠습니다.",
       "모든 정보가 같은 시점에 공개될 필요는 없습니다.",

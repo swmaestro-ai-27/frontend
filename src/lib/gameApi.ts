@@ -39,7 +39,11 @@ type ApiMessage = {
   created_at?: string;
 };
 
-const PLAYER_ID_STORAGE_KEY = "demo-day-incident-player-id";
+const USER_ID_STORAGE_KEY = "demo-day-incident-user-id";
+const LEGACY_PLAYER_ID_STORAGE_KEY = "demo-day-incident-player-id";
+const BACKEND_API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ?? "https://demoday.yunseong.dev"
+).replace(/\/$/, "");
 
 function createFallbackId() {
   return `player-${Date.now().toString(36)}-${Math.random()
@@ -52,9 +56,12 @@ function getPlayerId() {
     return "server-render";
   }
 
-  const existingPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
+  const existingPlayerId =
+    localStorage.getItem(USER_ID_STORAGE_KEY) ??
+    localStorage.getItem(LEGACY_PLAYER_ID_STORAGE_KEY);
 
   if (existingPlayerId) {
+    localStorage.setItem(USER_ID_STORAGE_KEY, existingPlayerId);
     return existingPlayerId;
   }
 
@@ -63,28 +70,46 @@ function getPlayerId() {
       ? crypto.randomUUID()
       : createFallbackId();
 
-  localStorage.setItem(PLAYER_ID_STORAGE_KEY, nextPlayerId);
+  localStorage.setItem(USER_ID_STORAGE_KEY, nextPlayerId);
+
+  return nextPlayerId;
+}
+
+function rotatePlayerId() {
+  if (typeof window === "undefined") {
+    return "server-render";
+  }
+
+  const nextPlayerId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : createFallbackId();
+
+  localStorage.setItem(USER_ID_STORAGE_KEY, nextPlayerId);
+  localStorage.removeItem(LEGACY_PLAYER_ID_STORAGE_KEY);
 
   return nextPlayerId;
 }
 
 function convertApiMessageToChatMessage(message: ApiMessage): ChatMessage {
+  const isPlayerMessage = message.sender === "user" || message.sender === "me";
+
   return {
-    speaker:
-      message.sender === "user" || message.sender === "me" ? "player" : "npc",
+    speaker: isPlayerMessage ? "player" : "npc",
     text: message.content,
   };
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const playerId = getPlayerId();
-
-  const response = await fetch(url, {
+async function requestJson<T>(
+  url: string,
+  init?: RequestInit,
+  baseUrl = BACKEND_API_BASE_URL,
+): Promise<T> {
+  const response = await fetch(`${baseUrl}${url}`, {
     ...init,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "user-id": playerId,
-      "x-player-id": playerId,
+      "x-user-id": getPlayerId(),
       ...(init?.headers ?? {}),
     },
   });
@@ -165,31 +190,6 @@ export const gameApi = {
     };
   },
 
-  async getAriaMessages(): Promise<ChatMessage[]> {
-    const data = await requestJson<{
-      messages: ApiMessage[];
-    }>("/api/aria/messages");
-
-    return data.messages.map(convertApiMessageToChatMessage);
-  },
-
-  async sendAriaMessage(content: string): Promise<ChatMessage> {
-    const data = await requestJson<{
-      sender: string;
-      content: string;
-      id: number;
-      createdAt: string;
-    }>("/api/aria/messages", {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    });
-
-    return {
-      speaker: "npc",
-      text: data.content,
-    };
-  },
-
   async submitDeduction(
     request: DeductionRequest
   ): Promise<DeductionResponse> {
@@ -202,12 +202,16 @@ export const gameApi = {
   async probeRecoveredTrace(): Promise<TraceProbeResponse> {
     return requestJson<TraceProbeResponse>("/api/clues/trace", {
       method: "POST",
-    });
+    }, "");
   },
 
   async resetProgress(): Promise<void> {
     await requestJson("/api/progress/reset", {
       method: "POST",
-    });
+    }, "");
+  },
+
+  startNewUserSession(): void {
+    rotatePlayerId();
   },
 };

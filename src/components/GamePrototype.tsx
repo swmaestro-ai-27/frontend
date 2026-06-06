@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import {
+  type PointerEvent,
   type ReactNode,
   type WheelEvent,
   useEffect,
@@ -10,9 +11,8 @@ import {
   useState,
 } from "react";
 import {
-  ariaAgent,
-  ARIA_CHARACTER_ID,
   caseInfo,
+  ARIA_CHARACTER_ID,
   clues,
   deductionTargets,
   endingEvents,
@@ -41,6 +41,11 @@ type DeductionForm = {
   clues: number[];
 };
 
+type AnimatedChatMessage = ChatMessage & {
+  animationId?: string;
+  isTyping?: boolean;
+};
+
 const initialDeduction: DeductionForm = {
   content: "",
   character: null,
@@ -52,6 +57,8 @@ const MAIN_TABS: MainTab[] = ["home", "clue", "character", "note"];
 const INTRO_COMPLETE_STORAGE_KEY = "demo-day-incident-intro-complete";
 const ARIA_MESSAGE_STORAGE_KEY = "mystery-aria-message";
 const NOTE_STORAGE_KEY = "mystery-note";
+const CHAT_TYPING_INTERVAL_MS = 18;
+const CHAT_TYPING_MAX_TICKS = 110;
 const RECOVERED_TRACE_TRANSLATION_START_RATIO = 0.30;
 const RECOVERED_TRACE_TRANSLATION_LINES = [
   "[세션 추적 기록 복구됨]",
@@ -80,6 +87,51 @@ const RECOVERED_TRACE_TRANSLATION_LINES = [
 
 function addUniqueId(ids: number[], id: number) {
   return ids.includes(id) ? ids : [...ids, id];
+}
+
+function deriveUnlockedIds(
+  interactedClueIds: number[],
+  interactedCharacterIds: number[],
+) {
+  const unlockedClues = new Set(INITIAL_UNLOCKED_CLUE_IDS);
+  const unlockedCharacters = new Set(INITIAL_UNLOCKED_CHARACTER_IDS);
+
+  for (const clue of clues) {
+    if (!interactedClueIds.includes(clue.id)) {
+      continue;
+    }
+
+    unlockedClues.add(clue.id);
+
+    if (clue.nextUnlock?.type === "clue") {
+      unlockedClues.add(clue.nextUnlock.id);
+    }
+
+    if (clue.nextUnlock?.type === "character") {
+      unlockedCharacters.add(clue.nextUnlock.id);
+    }
+  }
+
+  for (const character of interrogatableCharacters) {
+    if (!interactedCharacterIds.includes(character.id)) {
+      continue;
+    }
+
+    unlockedCharacters.add(character.id);
+
+    if (character.nextUnlock?.type === "clue") {
+      unlockedClues.add(character.nextUnlock.id);
+    }
+
+    if (character.nextUnlock?.type === "character") {
+      unlockedCharacters.add(character.nextUnlock.id);
+    }
+  }
+
+  return {
+    clueIds: [...unlockedClues],
+    characterIds: [...unlockedCharacters],
+  };
 }
 
 function getInitialScreen(): Screen {
@@ -134,14 +186,15 @@ export default function GamePrototype() {
     return localStorage.getItem(NOTE_STORAGE_KEY) ?? "";
   });
   const [chatInput, setChatInput] = useState("");
-  const [chatLogs, setChatLogs] = useState<Record<number, ChatMessage[]>>({});
+  const [chatLogs, setChatLogs] = useState<Record<number, AnimatedChatMessage[]>>(
+    {},
+  );
   const [isSendingChat, setIsSendingChat] = useState(false);
-  const [ariaInput, setAriaInput] = useState("");
-  const [ariaChatLog, setAriaChatLog] = useState<ChatMessage[]>([]);
-  const [isSendingAria, setIsSendingAria] = useState(false);
+  const [isWaitingForChatReply, setIsWaitingForChatReply] = useState(false);
   const [deduction, setDeduction] = useState<DeductionForm>(initialDeduction);
   const [deductionResult, setDeductionResult] =
     useState<DeductionResponse | null>(null);
+  const chatTypingTimerRefs = useRef<Record<number, number | undefined>>({});
   const traceProbeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -152,6 +205,19 @@ export default function GamePrototype() {
     localStorage.setItem(ARIA_MESSAGE_STORAGE_KEY, ariaMessage);
   }, [ariaMessage]);
 
+  useEffect(() => {
+    const chatTypingTimers = chatTypingTimerRefs.current;
+
+    return () => {
+      Object.values(chatTypingTimers).forEach((timerId) => {
+        if (timerId) {
+          window.clearInterval(timerId);
+        }
+      });
+
+    };
+  }, []);
+
   const currentChatLog = useMemo(() => {
     if (!selectedCharacter) {
       return [];
@@ -160,21 +226,6 @@ export default function GamePrototype() {
     return chatLogs[selectedCharacter.id] ?? [];
   }, [chatLogs, selectedCharacter]);
 
-  async function loadAriaMessages() {
-    try {
-      const messages = await gameApi.getAriaMessages();
-      setAriaChatLog(messages);
-    } catch (error) {
-      console.error("[GamePrototype] ARIA 대화 로드 실패:", error);
-      setAriaChatLog([
-        {
-          speaker: "npc",
-          text: ariaAgent.firstMessage,
-        },
-      ]);
-    }
-  }
-
   async function loadInteractions() {
     try {
       const [clueInteractions, characterInteractions] = await Promise.all([
@@ -182,27 +233,22 @@ export default function GamePrototype() {
         gameApi.getCharacterInteractions(),
       ]);
 
-      setInteractedClueIds(
-        clueInteractions
-          .filter((interaction) => interaction.interacted)
-          .map((interaction) => interaction.id),
-      );
-      setUnlockedClueIds(
-        clueInteractions
-          .filter((interaction) => interaction.unlocked)
-          .map((interaction) => interaction.id),
+      const nextInteractedClueIds = clueInteractions
+        .filter((interaction) => interaction.interacted)
+        .map((interaction) => interaction.id);
+      const nextInteractedCharacterIds = characterInteractions
+        .filter((interaction) => interaction.interacted)
+        .map((interaction) => interaction.id);
+      const nextUnlocked = deriveUnlockedIds(
+        nextInteractedClueIds,
+        nextInteractedCharacterIds,
       );
 
-      setInteractedCharacterIds(
-        characterInteractions
-          .filter((interaction) => interaction.interacted)
-          .map((interaction) => interaction.id),
-      );
-      setUnlockedCharacterIds(
-        characterInteractions
-          .filter((interaction) => interaction.unlocked)
-          .map((interaction) => interaction.id),
-      );
+      setInteractedClueIds(nextInteractedClueIds);
+      setUnlockedClueIds(nextUnlocked.clueIds);
+
+      setInteractedCharacterIds(nextInteractedCharacterIds);
+      setUnlockedCharacterIds(nextUnlocked.characterIds);
     } catch (error) {
       console.error("[GamePrototype] 상호작용 상태 로드 실패:", error);
     }
@@ -221,6 +267,93 @@ export default function GamePrototype() {
     setUnlockedCharacterIds((prev) => addUniqueId(prev, target.id));
   }
 
+  function clearCharacterTypingTimer(characterId: number) {
+    const timerId = chatTypingTimerRefs.current[characterId];
+
+    if (!timerId) {
+      return;
+    }
+
+    window.clearInterval(timerId);
+    chatTypingTimerRefs.current[characterId] = undefined;
+  }
+
+  function createChatAnimationId() {
+    return `chat-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+  }
+
+  function typeNpcMessageIntoCharacterLog(
+    characterId: number,
+    message: ChatMessage,
+  ) {
+    return new Promise<void>((resolve) => {
+      clearCharacterTypingTimer(characterId);
+
+      const animationId = createChatAnimationId();
+      const characters = Array.from(message.text);
+      const charactersPerTick = Math.max(
+        1,
+        Math.ceil(characters.length / CHAT_TYPING_MAX_TICKS),
+      );
+      let visibleCharacterCount = 0;
+
+      setChatLogs((prev) => ({
+        ...prev,
+        [characterId]: [
+          ...(prev[characterId] ?? []),
+          {
+            ...message,
+            animationId,
+            isTyping: characters.length > 0,
+            text: "",
+          },
+        ],
+      }));
+
+      if (characters.length === 0) {
+        resolve();
+        return;
+      }
+
+      const updateTypingMessage = (nextText: string, isTyping: boolean) => {
+        setChatLogs((prev) => ({
+          ...prev,
+          [characterId]: (prev[characterId] ?? []).map((chatMessage) =>
+            chatMessage.animationId === animationId
+              ? {
+                  ...chatMessage,
+                  text: nextText,
+                  isTyping,
+                }
+              : chatMessage,
+          ),
+        }));
+      };
+
+      const timerId = window.setInterval(() => {
+        visibleCharacterCount = Math.min(
+          characters.length,
+          visibleCharacterCount + charactersPerTick,
+        );
+
+        const nextText = characters.slice(0, visibleCharacterCount).join("");
+
+        if (visibleCharacterCount >= characters.length) {
+          clearCharacterTypingTimer(characterId);
+          updateTypingMessage(nextText, false);
+          resolve();
+          return;
+        }
+
+        updateTypingMessage(nextText, true);
+      }, CHAT_TYPING_INTERVAL_MS);
+
+      chatTypingTimerRefs.current[characterId] = timerId;
+    });
+  }
+
   function completeIntro() {
     localStorage.setItem(INTRO_COMPLETE_STORAGE_KEY, "true");
     setScreen("main");
@@ -229,7 +362,6 @@ export default function GamePrototype() {
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
       void loadInteractions();
-      void loadAriaMessages();
     }, 0);
 
     return () => {
@@ -332,7 +464,15 @@ export default function GamePrototype() {
 
       setChatLogs((prev) => ({
         ...prev,
-        [character.id]: messages,
+        [character.id]:
+          messages.length > 0
+            ? messages
+            : [
+                {
+                  speaker: "npc",
+                  text: character.firstMessage,
+                },
+              ],
       }));
     } catch (error) {
       console.error("[GamePrototype] 인물 대화 로드 실패:", error);
@@ -363,6 +503,7 @@ export default function GamePrototype() {
 
     setChatInput("");
     setIsSendingChat(true);
+    setIsWaitingForChatReply(true);
 
     setChatLogs((prev) => ({
       ...prev,
@@ -381,66 +522,19 @@ export default function GamePrototype() {
         question,
       );
 
-      setChatLogs((prev) => ({
-        ...prev,
-        [characterId]: [...(prev[characterId] ?? []), npcMessage],
-      }));
+      setIsWaitingForChatReply(false);
+      await typeNpcMessageIntoCharacterLog(characterId, npcMessage);
     } catch (error) {
       console.error("[GamePrototype] NPC 답변 생성 실패:", error);
 
-      setChatLogs((prev) => ({
-        ...prev,
-        [characterId]: [
-          ...(prev[characterId] ?? []),
-          {
-            speaker: "npc",
-            text: "잠시만요. 지금은 제대로 대답하기 어렵습니다.",
-          },
-        ],
-      }));
+      setIsWaitingForChatReply(false);
+      await typeNpcMessageIntoCharacterLog(characterId, {
+        speaker: "npc",
+        text: "잠시만요. 지금은 제대로 대답하기 어렵습니다.",
+      });
     } finally {
       setIsSendingChat(false);
-    }
-  }
-
-  async function sendAriaQuestion() {
-    if (isSendingAria) {
-      return;
-    }
-
-    if (!ariaInput.trim()) {
-      return;
-    }
-
-    const question = ariaInput.trim();
-
-    setAriaInput("");
-    setIsSendingAria(true);
-
-    setAriaChatLog((prev) => [
-      ...prev,
-      {
-        speaker: "player",
-        text: question,
-      },
-    ]);
-
-    try {
-      const ariaMessage = await gameApi.sendAriaMessage(question);
-
-      setAriaChatLog((prev) => [...prev, ariaMessage]);
-    } catch (error) {
-      console.error("[GamePrototype] ARIA 답변 생성 실패:", error);
-
-      setAriaChatLog((prev) => [
-        ...prev,
-        {
-          speaker: "npc",
-          text: "현재 기록을 정리하는 중 문제가 발생했습니다. 잠시 후 다시 질문해 주세요.",
-        },
-      ]);
-    } finally {
-      setIsSendingAria(false);
+      setIsWaitingForChatReply(false);
     }
   }
 
@@ -462,7 +556,10 @@ export default function GamePrototype() {
 
   function isDeductionTargetUnlocked(characterId: number) {
     if (characterId === ARIA_CHARACTER_ID) {
-      return unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID);
+      return (
+        unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID) &&
+        clues.every((clue) => interactedClueIds.includes(clue.id))
+      );
     }
 
     return unlockedCharacterIds.includes(characterId);
@@ -472,7 +569,7 @@ export default function GamePrototype() {
     if (!deduction.character) {
       setDeductionResult({
         result: false,
-        comment: "범인을 먼저 선택해야 합니다.",
+        comment: "지목 대상을 먼저 선택해야 합니다.",
       });
       setScreen("reveal");
       return;
@@ -525,11 +622,17 @@ export default function GamePrototype() {
   }
 
   async function startNewGame() {
+    Object.keys(chatTypingTimerRefs.current).forEach((characterId) => {
+      clearCharacterTypingTimer(Number(characterId));
+    });
+
     try {
       await gameApi.resetProgress();
     } catch (error) {
       console.error("[GamePrototype] 새 시작 초기화 실패:", error);
     }
+
+    gameApi.startNewUserSession();
 
     localStorage.removeItem(INTRO_COMPLETE_STORAGE_KEY);
     localStorage.removeItem(ARIA_MESSAGE_STORAGE_KEY);
@@ -548,9 +651,7 @@ export default function GamePrototype() {
     setChatInput("");
     setChatLogs({});
     setIsSendingChat(false);
-    setAriaInput("");
-    setAriaChatLog([]);
-    setIsSendingAria(false);
+    setIsWaitingForChatReply(false);
     setDeduction(initialDeduction);
     setDeductionResult(null);
   }
@@ -588,11 +689,7 @@ export default function GamePrototype() {
             setChatInput={setChatInput}
             chatLog={currentChatLog}
             isSendingChat={isSendingChat}
-            ariaInput={ariaInput}
-            setAriaInput={setAriaInput}
-            ariaChatLog={ariaChatLog}
-            isSendingAria={isSendingAria}
-            onSendAria={sendAriaQuestion}
+            isWaitingForChatReply={isWaitingForChatReply}
             onSendChat={sendQuestion}
             onSubmitFinal={() => setScreen("final")}
             onNewStart={startNewGame}
@@ -867,11 +964,7 @@ function MainScreen({
   setChatInput,
   chatLog,
   isSendingChat,
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  onSendAria,
+  isWaitingForChatReply,
   onSendChat,
   onSubmitFinal,
   onNewStart,
@@ -891,13 +984,9 @@ function MainScreen({
   setSelectedCharacter: (character: Character | null) => void;
   chatInput: string;
   setChatInput: (value: string) => void;
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSendingChat: boolean;
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
-  isSendingAria: boolean;
-  onSendAria: () => void;
+  isWaitingForChatReply: boolean;
   onSendChat: () => void;
   onSubmitFinal: () => void;
   onNewStart: () => void;
@@ -1014,7 +1103,9 @@ function MainScreen({
       >
         <div
           key={isCharacterChatOpen ? "character-chat" : mainTab}
-          className={`${animationClass} h-full`}
+          className={`${animationClass} ${
+            isCharacterChatOpen ? "h-full" : "min-h-full"
+          }`}
         >
           {mainTab === "home" && (
             <HomeTab
@@ -1046,6 +1137,7 @@ function MainScreen({
                 setChatInput={setChatInput}
                 chatLog={chatLog}
                 isSending={isSendingChat}
+                isWaitingForReply={isWaitingForChatReply}
                 onSend={onSendChat}
                 onClose={() => setSelectedCharacter(null)}
               />
@@ -1061,11 +1153,8 @@ function MainScreen({
             <NoteTab
               note={note}
               setNote={setNote}
-              ariaInput={ariaInput}
-              setAriaInput={setAriaInput}
-              ariaChatLog={ariaChatLog}
-              isSendingAria={isSendingAria}
-              onSendAria={onSendAria}
+              interactedClueIds={interactedClueIds}
+              interactedCharacterIds={interactedCharacterIds}
             />
           )}
         </div>
@@ -1078,9 +1167,69 @@ function MainScreen({
 
 function HorizontalScrollRow({ children }: { children: ReactNode }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    previousX: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   function stopTouchPropagation(event: { stopPropagation: () => void }) {
     event.stopPropagation();
+  }
+
+  function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== "mouse" || event.button !== 0) {
+      return;
+    }
+
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      previousX: event.clientX,
+      moved: false,
+    };
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    const scrollContainer = scrollRef.current;
+
+    if (!drag || !scrollContainer || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const totalDeltaX = event.clientX - drag.startX;
+    const deltaX = event.clientX - drag.previousX;
+
+    if (Math.abs(totalDeltaX) > 6) {
+      drag.moved = true;
+      suppressNextClickRef.current = true;
+    }
+
+    if (drag.moved) {
+      scrollContainer.scrollLeft -= deltaX;
+      event.preventDefault();
+    }
+
+    drag.previousX = event.clientX;
+  }
+
+  function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+
+    if (drag?.pointerId !== event.pointerId) {
+      return;
+    }
+
+    dragRef.current = null;
+
+    if (drag.moved) {
+      window.setTimeout(() => {
+        suppressNextClickRef.current = false;
+      }, 150);
+    }
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -1122,8 +1271,21 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       onTouchStart={stopTouchPropagation}
       onTouchMove={stopTouchPropagation}
       onTouchEnd={stopTouchPropagation}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
       onWheel={handleWheel}
-      className="-mx-5 flex touch-pan-x gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      onClickCapture={(event) => {
+        if (!suppressNextClickRef.current) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        suppressNextClickRef.current = false;
+      }}
+      className="-mx-5 flex touch-pan-x cursor-grab gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 active:cursor-grabbing [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {children}
     </div>
@@ -1325,7 +1487,7 @@ function ClueTab({
   );
 
   return (
-    <div className="pb-[calc(6rem_+_env(safe-area-inset-bottom))]">
+    <div className="pb-[calc(7rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="단서 목록"
         description="카드를 눌러 자세한 내용을 확인하세요."
@@ -1383,7 +1545,7 @@ function CharacterTab({
   );
 
   return (
-    <div className="pb-[calc(6rem_+_env(safe-area-inset-bottom))]">
+    <div className="pb-[calc(7rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="인물 목록"
         description="인물을 선택해 자유 심문을 진행하세요."
@@ -1469,25 +1631,19 @@ function CharacterTab({
 function NoteTab({
   note,
   setNote,
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  onSendAria,
+  interactedClueIds,
+  interactedCharacterIds,
 }: {
   note: string;
   setNote: (note: string) => void;
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
-  isSendingAria: boolean;
-  onSendAria: () => void;
+  interactedClueIds: number[];
+  interactedCharacterIds: number[];
 }) {
   return (
     <div className="space-y-5 pb-8">
       <SectionTitle
         title="수사 노트"
-        description="직접 기록하고, ARIA에게 지금까지의 용의자 대화를 정리받습니다."
+        description="직접 기록하고, ARIA가 남긴 단서 안내를 함께 검토합니다."
       />
 
       <section className="rounded-[28px] border border-zinc-800 bg-zinc-950 p-4">
@@ -1506,77 +1662,86 @@ function NoteTab({
         />
       </section>
 
-      <AriaSupportPanel
-        ariaInput={ariaInput}
-        setAriaInput={setAriaInput}
-        ariaChatLog={ariaChatLog}
-        isSendingAria={isSendingAria}
-        onSendAria={onSendAria}
+      <AriaEvidencePanel
+        interactedClueIds={interactedClueIds}
+        interactedCharacterIds={interactedCharacterIds}
       />
     </div>
   );
 }
 
-function AriaSupportPanel({
-  ariaInput,
-  setAriaInput,
-  ariaChatLog,
-  isSendingAria,
-  onSendAria,
+function AriaEvidencePanel({
+  interactedClueIds,
+  interactedCharacterIds,
 }: {
-  ariaInput: string;
-  setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
-  isSendingAria: boolean;
-  onSendAria: () => void;
+  interactedClueIds: number[];
+  interactedCharacterIds: number[];
 }) {
+  const reviewedClues = clues.filter((clue) =>
+    interactedClueIds.includes(clue.id),
+  );
+  const reviewedCharacters = interrogatableCharacters.filter((character) =>
+    interactedCharacterIds.includes(character.id),
+  );
+  const latestClue = reviewedClues.at(-1);
+
   return (
     <section
       data-swipe-ignore="true"
-      className="flex h-[min(420px,58dvh)] min-h-[320px] flex-col overflow-hidden rounded-[24px] border border-zinc-800 bg-zinc-950 p-4 min-[390px]:rounded-[28px]"
+      className="rounded-[24px] border border-zinc-800 bg-zinc-950 p-4 min-[390px]:rounded-[28px]"
     >
-      <div className="shrink-0">
+      <div>
         <p className="text-xs font-bold tracking-[0.18em] text-zinc-600">
-          ARIA SUPPORT
+          ARIA LOG
         </p>
-        <h3 className="mt-1 text-base font-black text-zinc-200">
-          대화 기록 정리
-        </h3>
-        <p className="mt-2 text-xs leading-5 text-zinc-600">
-          ARIA는 심문 대상이 아니라 조사 보조자입니다. 확인한 단서와 용의자별
-          대화 내용을 기준으로 정리합니다.
-        </p>
+        <h3 className="mt-1 text-base font-black text-zinc-200">단서 안내</h3>
       </div>
 
-      <div className="mt-3 min-h-0 flex-1 overflow-hidden">
-        <ChatMessageList chatLog={ariaChatLog} isSending={isSendingAria} />
-      </div>
-
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSendAria();
-        }}
-        className="relative z-10 mt-2 shrink-0 border-t border-zinc-800 bg-zinc-950 pt-3"
-      >
-        <div className="flex items-center gap-2">
-          <input
-            value={ariaInput}
-            onChange={(event) => setAriaInput(event.target.value)}
-            placeholder="ARIA에게 정리 요청"
-            disabled={isSendingAria}
-            className="h-12 min-w-0 flex-1 rounded-xl border border-zinc-800 bg-black px-4 text-sm outline-none placeholder:text-zinc-700 disabled:opacity-60"
-          />
-
-          <button
-            type="submit"
-            disabled={isSendingAria}
-            className="h-12 shrink-0 rounded-xl bg-zinc-100 px-4 text-sm font-black text-black active:scale-[0.99] disabled:opacity-60"
-          >
-            {isSendingAria ? "정리" : "전송"}
-          </button>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">확인 단서</p>
+          <p className="mt-1 text-xl font-black text-zinc-100">
+            {reviewedClues.length}
+          </p>
         </div>
-      </form>
+
+        <div className="rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">심문 인물</p>
+          <p className="mt-1 text-xl font-black text-zinc-100">
+            {reviewedCharacters.length}
+          </p>
+        </div>
+      </div>
+
+      {latestClue ? (
+        <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-xs text-zinc-600">최근 단서</p>
+          <p className="mt-1 text-sm font-bold text-zinc-200">
+            {latestClue.name}
+          </p>
+          <div className="mt-3 space-y-2">
+            {latestClue.ariaScripts.map((script) => (
+              <p key={script} className="text-sm leading-6 text-zinc-400">
+                {script}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+          <p className="text-sm leading-6 text-zinc-500">
+            확인한 단서가 없습니다. 기본 단서를 먼저 열어보세요.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
+        <p className="text-xs text-zinc-600">기록 상태</p>
+        <p className="mt-1 text-sm leading-6 text-zinc-400">
+          ARIA는 확인된 단서의 안내 기록만 제공합니다. 아직 복구되지 않은
+          기록은 조사 진행에 따라 순차적으로 드러납니다.
+        </p>
+      </div>
     </section>
   );
 }
@@ -1587,14 +1752,16 @@ function CharacterChatPanel({
   setChatInput,
   chatLog,
   isSending,
+  isWaitingForReply,
   onSend,
   onClose,
 }: {
   character: Character;
   chatInput: string;
   setChatInput: (value: string) => void;
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSending: boolean;
+  isWaitingForReply: boolean;
   onSend: () => void;
   onClose: () => void;
 }) {
@@ -1629,7 +1796,7 @@ function CharacterChatPanel({
         </div>
       </div>
 
-      <ChatMessageList chatLog={chatLog} isSending={isSending} />
+      <ChatMessageList chatLog={chatLog} isSending={isWaitingForReply} />
 
       <form
         onSubmit={(event) => {
@@ -1664,10 +1831,11 @@ function ChatMessageList({
   chatLog,
   isSending,
 }: {
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSending: boolean;
 }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = chatLog.at(-1);
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -1680,7 +1848,7 @@ function ChatMessageList({
       top: scrollContainer.scrollHeight,
       behavior: "smooth",
     });
-  }, [chatLog.length, isSending]);
+  }, [chatLog.length, isSending, latestMessage?.text]);
 
   return (
     <div
@@ -1696,13 +1864,18 @@ function ChatMessageList({
           }`}
         >
           <div
-            className={`max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-6 ${
+            className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6 ${
               message.speaker === "player"
                 ? "bg-zinc-100 text-black"
                 : "bg-transparent text-zinc-100"
             }`}
           >
             {message.text}
+            {message.isTyping && (
+              <span className="ml-0.5 inline-block animate-pulse text-zinc-400">
+                ▍
+              </span>
+            )}
           </div>
         </div>
       ))}
@@ -1740,9 +1913,15 @@ function FinalScreen({
   const availableEvidence = clues.filter((clue) =>
     interactedClueIds.includes(clue.id),
   );
+  const hasCollectedAllClues = clues.every((clue) =>
+    interactedClueIds.includes(clue.id),
+  );
   const availableDeductionTargets = deductionTargets.filter((character) => {
     if (character.id === ARIA_CHARACTER_ID) {
-      return unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID);
+      return (
+        hasCollectedAllClues &&
+        unlockedClueIds.includes(RECOVERED_TRACE_CLUE_ID)
+      );
     }
 
     return unlockedCharacterIds.includes(character.id);
@@ -1754,7 +1933,9 @@ function FinalScreen({
 
       <div className="mt-5 space-y-6 pb-8">
         <section>
-          <h2 className="mb-3 text-sm font-black text-zinc-300">범인 선택</h2>
+          <h2 className="mb-3 text-sm font-black text-zinc-300">
+            지목 대상 선택
+          </h2>
           <div className="grid grid-cols-2 gap-2">
             {availableDeductionTargets.length === 0 && (
               <div className="col-span-2 rounded-2xl border border-dashed border-zinc-800 bg-zinc-950 p-4 text-sm leading-6 text-zinc-600">
@@ -1829,7 +2010,7 @@ function FinalScreen({
             onChange={(event) =>
               updateDeduction({ content: event.target.value })
             }
-            placeholder="범인이 왜, 어떤 방식으로 범행을 저질렀는지 단서와 함께 설명하세요."
+            placeholder="사건의 원인이라고 보는 대상과 근거를 단서와 함께 설명하세요."
             className="min-h-40 w-full resize-none rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm leading-6 outline-none placeholder:text-zinc-700"
           />
         </label>
