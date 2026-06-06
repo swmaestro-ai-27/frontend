@@ -29,11 +29,14 @@ export type TraceProbeResponse = {
 
 type ApiMessage = {
   id: number;
-  user_id?: string;
+  characterId?: number;
   character_id?: number;
-  sender: string;
+  user_id?: string;
+  sender: "user" | "character" | "me" | string;
+  senderName?: string;
   content: string;
-  createdAt: string;
+  createdAt?: string;
+  created_at?: string;
 };
 
 const USER_ID_STORAGE_KEY = "demo-day-incident-user-id";
