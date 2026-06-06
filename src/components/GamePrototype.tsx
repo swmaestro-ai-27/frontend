@@ -515,7 +515,7 @@ export default function GamePrototype() {
     if (!deduction.character) {
       setDeductionResult({
         result: false,
-        comment: "범인을 먼저 선택해야 합니다.",
+        comment: "지목 대상을 먼저 선택해야 합니다.",
       });
       setScreen("reveal");
       return;
@@ -1761,7 +1761,9 @@ function FinalScreen({
 
       <div className="mt-5 space-y-6 pb-8">
         <section>
-          <h2 className="mb-3 text-sm font-black text-zinc-300">범인 선택</h2>
+          <h2 className="mb-3 text-sm font-black text-zinc-300">
+            지목 대상 선택
+          </h2>
           <div className="grid grid-cols-2 gap-2">
             {availableDeductionTargets.map((character) => {
               const active = deduction.character === character.id;
@@ -1830,7 +1832,7 @@ function FinalScreen({
             onChange={(event) =>
               updateDeduction({ content: event.target.value })
             }
-            placeholder="범인이 왜, 어떤 방식으로 범행을 저질렀는지 단서와 함께 설명하세요."
+            placeholder="사건의 원인이라고 보는 대상과 근거를 단서와 함께 설명하세요."
             className="min-h-40 w-full resize-none rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm leading-6 outline-none placeholder:text-zinc-700"
           />
         </label>
