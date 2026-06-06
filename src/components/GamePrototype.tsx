@@ -2,8 +2,8 @@
 
 import Image from "next/image";
 import {
-  type PointerEvent,
   type ReactNode,
+  type WheelEvent,
   useEffect,
   useMemo,
   useRef,
@@ -40,6 +40,11 @@ type DeductionForm = {
   clues: number[];
 };
 
+type AnimatedChatMessage = ChatMessage & {
+  animationId?: string;
+  isTyping?: boolean;
+};
+
 const initialDeduction: DeductionForm = {
   content: "",
   character: null,
@@ -51,9 +56,56 @@ const MAIN_TABS: MainTab[] = ["home", "clue", "character", "note"];
 const INTRO_COMPLETE_STORAGE_KEY = "demo-day-incident-intro-complete";
 const ARIA_MESSAGE_STORAGE_KEY = "mystery-aria-message";
 const NOTE_STORAGE_KEY = "mystery-note";
+const CHAT_TYPING_INTERVAL_MS = 18;
+const CHAT_TYPING_MAX_TICKS = 110;
 
 function addUniqueId(ids: number[], id: number) {
   return ids.includes(id) ? ids : [...ids, id];
+}
+
+function deriveUnlockedIds(
+  interactedClueIds: number[],
+  interactedCharacterIds: number[],
+) {
+  const unlockedClues = new Set(INITIAL_UNLOCKED_CLUE_IDS);
+  const unlockedCharacters = new Set(INITIAL_UNLOCKED_CHARACTER_IDS);
+
+  for (const clue of clues) {
+    if (!interactedClueIds.includes(clue.id)) {
+      continue;
+    }
+
+    unlockedClues.add(clue.id);
+
+    if (clue.nextUnlock?.type === "clue") {
+      unlockedClues.add(clue.nextUnlock.id);
+    }
+
+    if (clue.nextUnlock?.type === "character") {
+      unlockedCharacters.add(clue.nextUnlock.id);
+    }
+  }
+
+  for (const character of interrogatableCharacters) {
+    if (!interactedCharacterIds.includes(character.id)) {
+      continue;
+    }
+
+    unlockedCharacters.add(character.id);
+
+    if (character.nextUnlock?.type === "clue") {
+      unlockedClues.add(character.nextUnlock.id);
+    }
+
+    if (character.nextUnlock?.type === "character") {
+      unlockedCharacters.add(character.nextUnlock.id);
+    }
+  }
+
+  return {
+    clueIds: [...unlockedClues],
+    characterIds: [...unlockedCharacters],
+  };
 }
 
 function getInitialScreen(): Screen {
@@ -108,14 +160,20 @@ export default function GamePrototype() {
     return localStorage.getItem(NOTE_STORAGE_KEY) ?? "";
   });
   const [chatInput, setChatInput] = useState("");
-  const [chatLogs, setChatLogs] = useState<Record<number, ChatMessage[]>>({});
+  const [chatLogs, setChatLogs] = useState<Record<number, AnimatedChatMessage[]>>(
+    {},
+  );
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [isWaitingForChatReply, setIsWaitingForChatReply] = useState(false);
   const [ariaInput, setAriaInput] = useState("");
-  const [ariaChatLog, setAriaChatLog] = useState<ChatMessage[]>([]);
+  const [ariaChatLog, setAriaChatLog] = useState<AnimatedChatMessage[]>([]);
   const [isSendingAria, setIsSendingAria] = useState(false);
+  const [isWaitingForAriaReply, setIsWaitingForAriaReply] = useState(false);
   const [deduction, setDeduction] = useState<DeductionForm>(initialDeduction);
   const [deductionResult, setDeductionResult] =
     useState<DeductionResponse | null>(null);
+  const chatTypingTimerRefs = useRef<Record<number, number | undefined>>({});
+  const ariaTypingTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem(NOTE_STORAGE_KEY, note);
@@ -124,6 +182,22 @@ export default function GamePrototype() {
   useEffect(() => {
     localStorage.setItem(ARIA_MESSAGE_STORAGE_KEY, ariaMessage);
   }, [ariaMessage]);
+
+  useEffect(() => {
+    const chatTypingTimers = chatTypingTimerRefs.current;
+
+    return () => {
+      Object.values(chatTypingTimers).forEach((timerId) => {
+        if (timerId) {
+          window.clearInterval(timerId);
+        }
+      });
+
+      if (ariaTypingTimerRef.current) {
+        window.clearInterval(ariaTypingTimerRef.current);
+      }
+    };
+  }, []);
 
   const currentChatLog = useMemo(() => {
     if (!selectedCharacter) {
@@ -155,27 +229,22 @@ export default function GamePrototype() {
         gameApi.getCharacterInteractions(),
       ]);
 
-      setInteractedClueIds(
-        clueInteractions
-          .filter((interaction) => interaction.interacted)
-          .map((interaction) => interaction.id),
-      );
-      setUnlockedClueIds(
-        clueInteractions
-          .filter((interaction) => interaction.unlocked)
-          .map((interaction) => interaction.id),
+      const nextInteractedClueIds = clueInteractions
+        .filter((interaction) => interaction.interacted)
+        .map((interaction) => interaction.id);
+      const nextInteractedCharacterIds = characterInteractions
+        .filter((interaction) => interaction.interacted)
+        .map((interaction) => interaction.id);
+      const nextUnlocked = deriveUnlockedIds(
+        nextInteractedClueIds,
+        nextInteractedCharacterIds,
       );
 
-      setInteractedCharacterIds(
-        characterInteractions
-          .filter((interaction) => interaction.interacted)
-          .map((interaction) => interaction.id),
-      );
-      setUnlockedCharacterIds(
-        characterInteractions
-          .filter((interaction) => interaction.unlocked)
-          .map((interaction) => interaction.id),
-      );
+      setInteractedClueIds(nextInteractedClueIds);
+      setUnlockedClueIds(nextUnlocked.clueIds);
+
+      setInteractedCharacterIds(nextInteractedCharacterIds);
+      setUnlockedCharacterIds(nextUnlocked.characterIds);
     } catch (error) {
       console.error("[GamePrototype] 상호작용 상태 로드 실패:", error);
     }
@@ -192,6 +261,165 @@ export default function GamePrototype() {
     }
 
     setUnlockedCharacterIds((prev) => addUniqueId(prev, target.id));
+  }
+
+  function clearCharacterTypingTimer(characterId: number) {
+    const timerId = chatTypingTimerRefs.current[characterId];
+
+    if (!timerId) {
+      return;
+    }
+
+    window.clearInterval(timerId);
+    chatTypingTimerRefs.current[characterId] = undefined;
+  }
+
+  function clearAriaTypingTimer() {
+    if (!ariaTypingTimerRef.current) {
+      return;
+    }
+
+    window.clearInterval(ariaTypingTimerRef.current);
+    ariaTypingTimerRef.current = null;
+  }
+
+  function createChatAnimationId() {
+    return `chat-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+  }
+
+  function typeNpcMessageIntoCharacterLog(
+    characterId: number,
+    message: ChatMessage,
+  ) {
+    return new Promise<void>((resolve) => {
+      clearCharacterTypingTimer(characterId);
+
+      const animationId = createChatAnimationId();
+      const characters = Array.from(message.text);
+      const charactersPerTick = Math.max(
+        1,
+        Math.ceil(characters.length / CHAT_TYPING_MAX_TICKS),
+      );
+      let visibleCharacterCount = 0;
+
+      setChatLogs((prev) => ({
+        ...prev,
+        [characterId]: [
+          ...(prev[characterId] ?? []),
+          {
+            ...message,
+            animationId,
+            isTyping: characters.length > 0,
+            text: "",
+          },
+        ],
+      }));
+
+      if (characters.length === 0) {
+        resolve();
+        return;
+      }
+
+      const updateTypingMessage = (nextText: string, isTyping: boolean) => {
+        setChatLogs((prev) => ({
+          ...prev,
+          [characterId]: (prev[characterId] ?? []).map((chatMessage) =>
+            chatMessage.animationId === animationId
+              ? {
+                  ...chatMessage,
+                  text: nextText,
+                  isTyping,
+                }
+              : chatMessage,
+          ),
+        }));
+      };
+
+      const timerId = window.setInterval(() => {
+        visibleCharacterCount = Math.min(
+          characters.length,
+          visibleCharacterCount + charactersPerTick,
+        );
+
+        const nextText = characters.slice(0, visibleCharacterCount).join("");
+
+        if (visibleCharacterCount >= characters.length) {
+          clearCharacterTypingTimer(characterId);
+          updateTypingMessage(nextText, false);
+          resolve();
+          return;
+        }
+
+        updateTypingMessage(nextText, true);
+      }, CHAT_TYPING_INTERVAL_MS);
+
+      chatTypingTimerRefs.current[characterId] = timerId;
+    });
+  }
+
+  function typeNpcMessageIntoAriaLog(message: ChatMessage) {
+    return new Promise<void>((resolve) => {
+      clearAriaTypingTimer();
+
+      const animationId = createChatAnimationId();
+      const characters = Array.from(message.text);
+      const charactersPerTick = Math.max(
+        1,
+        Math.ceil(characters.length / CHAT_TYPING_MAX_TICKS),
+      );
+      let visibleCharacterCount = 0;
+
+      setAriaChatLog((prev) => [
+        ...prev,
+        {
+          ...message,
+          animationId,
+          isTyping: characters.length > 0,
+          text: "",
+        },
+      ]);
+
+      if (characters.length === 0) {
+        resolve();
+        return;
+      }
+
+      const updateTypingMessage = (nextText: string, isTyping: boolean) => {
+        setAriaChatLog((prev) =>
+          prev.map((chatMessage) =>
+            chatMessage.animationId === animationId
+              ? {
+                  ...chatMessage,
+                  text: nextText,
+                  isTyping,
+                }
+              : chatMessage,
+          ),
+        );
+      };
+
+      const timerId = window.setInterval(() => {
+        visibleCharacterCount = Math.min(
+          characters.length,
+          visibleCharacterCount + charactersPerTick,
+        );
+
+        const nextText = characters.slice(0, visibleCharacterCount).join("");
+
+        if (visibleCharacterCount >= characters.length) {
+          clearAriaTypingTimer();
+          updateTypingMessage(nextText, false);
+          resolve();
+          return;
+        }
+
+        updateTypingMessage(nextText, true);
+      }, CHAT_TYPING_INTERVAL_MS);
+
+      ariaTypingTimerRef.current = timerId;
+    });
   }
 
   function completeIntro() {
@@ -289,7 +517,15 @@ export default function GamePrototype() {
 
       setChatLogs((prev) => ({
         ...prev,
-        [character.id]: messages,
+        [character.id]:
+          messages.length > 0
+            ? messages
+            : [
+                {
+                  speaker: "npc",
+                  text: character.firstMessage,
+                },
+              ],
       }));
     } catch (error) {
       console.error("[GamePrototype] 인물 대화 로드 실패:", error);
@@ -320,6 +556,7 @@ export default function GamePrototype() {
 
     setChatInput("");
     setIsSendingChat(true);
+    setIsWaitingForChatReply(true);
 
     setChatLogs((prev) => ({
       ...prev,
@@ -338,25 +575,19 @@ export default function GamePrototype() {
         question,
       );
 
-      setChatLogs((prev) => ({
-        ...prev,
-        [characterId]: [...(prev[characterId] ?? []), npcMessage],
-      }));
+      setIsWaitingForChatReply(false);
+      await typeNpcMessageIntoCharacterLog(characterId, npcMessage);
     } catch (error) {
       console.error("[GamePrototype] NPC 답변 생성 실패:", error);
 
-      setChatLogs((prev) => ({
-        ...prev,
-        [characterId]: [
-          ...(prev[characterId] ?? []),
-          {
-            speaker: "npc",
-            text: "잠시만요. 지금은 제대로 대답하기 어렵습니다.",
-          },
-        ],
-      }));
+      setIsWaitingForChatReply(false);
+      await typeNpcMessageIntoCharacterLog(characterId, {
+        speaker: "npc",
+        text: "잠시만요. 지금은 제대로 대답하기 어렵습니다.",
+      });
     } finally {
       setIsSendingChat(false);
+      setIsWaitingForChatReply(false);
     }
   }
 
@@ -373,6 +604,7 @@ export default function GamePrototype() {
 
     setAriaInput("");
     setIsSendingAria(true);
+    setIsWaitingForAriaReply(true);
 
     setAriaChatLog((prev) => [
       ...prev,
@@ -385,19 +617,19 @@ export default function GamePrototype() {
     try {
       const ariaMessage = await gameApi.sendAriaMessage(question);
 
-      setAriaChatLog((prev) => [...prev, ariaMessage]);
+      setIsWaitingForAriaReply(false);
+      await typeNpcMessageIntoAriaLog(ariaMessage);
     } catch (error) {
       console.error("[GamePrototype] ARIA 답변 생성 실패:", error);
 
-      setAriaChatLog((prev) => [
-        ...prev,
-        {
-          speaker: "npc",
-          text: "현재 기록을 정리하는 중 문제가 발생했습니다. 잠시 후 다시 질문해 주세요.",
-        },
-      ]);
+      setIsWaitingForAriaReply(false);
+      await typeNpcMessageIntoAriaLog({
+        speaker: "npc",
+        text: "현재 기록을 정리하는 중 문제가 발생했습니다. 잠시 후 다시 질문해 주세요.",
+      });
     } finally {
       setIsSendingAria(false);
+      setIsWaitingForAriaReply(false);
     }
   }
 
@@ -465,11 +697,18 @@ export default function GamePrototype() {
   }
 
   async function startNewGame() {
+    Object.keys(chatTypingTimerRefs.current).forEach((characterId) => {
+      clearCharacterTypingTimer(Number(characterId));
+    });
+    clearAriaTypingTimer();
+
     try {
       await gameApi.resetProgress();
     } catch (error) {
       console.error("[GamePrototype] 새 시작 초기화 실패:", error);
     }
+
+    gameApi.startNewUserSession();
 
     localStorage.removeItem(INTRO_COMPLETE_STORAGE_KEY);
     localStorage.removeItem(ARIA_MESSAGE_STORAGE_KEY);
@@ -488,9 +727,11 @@ export default function GamePrototype() {
     setChatInput("");
     setChatLogs({});
     setIsSendingChat(false);
+    setIsWaitingForChatReply(false);
     setAriaInput("");
     setAriaChatLog([]);
     setIsSendingAria(false);
+    setIsWaitingForAriaReply(false);
     setDeduction(initialDeduction);
     setDeductionResult(null);
   }
@@ -528,10 +769,12 @@ export default function GamePrototype() {
             setChatInput={setChatInput}
             chatLog={currentChatLog}
             isSendingChat={isSendingChat}
+            isWaitingForChatReply={isWaitingForChatReply}
             ariaInput={ariaInput}
             setAriaInput={setAriaInput}
             ariaChatLog={ariaChatLog}
             isSendingAria={isSendingAria}
+            isWaitingForAriaReply={isWaitingForAriaReply}
             onSendAria={sendAriaQuestion}
             onSendChat={sendQuestion}
             onSubmitFinal={() => setScreen("final")}
@@ -805,10 +1048,12 @@ function MainScreen({
   setChatInput,
   chatLog,
   isSendingChat,
+  isWaitingForChatReply,
   ariaInput,
   setAriaInput,
   ariaChatLog,
   isSendingAria,
+  isWaitingForAriaReply,
   onSendAria,
   onSendChat,
   onSubmitFinal,
@@ -829,12 +1074,14 @@ function MainScreen({
   setSelectedCharacter: (character: Character | null) => void;
   chatInput: string;
   setChatInput: (value: string) => void;
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSendingChat: boolean;
+  isWaitingForChatReply: boolean;
   ariaInput: string;
   setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
+  ariaChatLog: AnimatedChatMessage[];
   isSendingAria: boolean;
+  isWaitingForAriaReply: boolean;
   onSendAria: () => void;
   onSendChat: () => void;
   onSubmitFinal: () => void;
@@ -984,6 +1231,7 @@ function MainScreen({
                 setChatInput={setChatInput}
                 chatLog={chatLog}
                 isSending={isSendingChat}
+                isWaitingForReply={isWaitingForChatReply}
                 onSend={onSendChat}
                 onClose={() => setSelectedCharacter(null)}
               />
@@ -1003,6 +1251,7 @@ function MainScreen({
               setAriaInput={setAriaInput}
               ariaChatLog={ariaChatLog}
               isSendingAria={isSendingAria}
+              isWaitingForAriaReply={isWaitingForAriaReply}
               onSendAria={onSendAria}
             />
           )}
@@ -1016,62 +1265,19 @@ function MainScreen({
 
 function HorizontalScrollRow({ children }: { children: ReactNode }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    previousX: number;
-    moved: boolean;
-  } | null>(null);
 
   function stopTouchPropagation(event: { stopPropagation: () => void }) {
     event.stopPropagation();
   }
 
-  function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (event.pointerType === "mouse" && event.button !== 0) {
-      return;
-    }
-
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      previousX: event.clientX,
-      moved: false,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
     const scrollContainer = scrollRef.current;
 
-    if (!drag || !scrollContainer || drag.pointerId !== event.pointerId) {
+    if (!scrollContainer || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
       return;
     }
 
-    const deltaX = event.clientX - drag.previousX;
-
-    if (Math.abs(event.clientX - drag.startX) > 4) {
-      drag.moved = true;
-    }
-
-    if (drag.moved) {
-      scrollContainer.scrollLeft -= deltaX;
-      event.preventDefault();
-    }
-
-    drag.previousX = event.clientX;
-  }
-
-  function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
-
-    if (drag?.pointerId === event.pointerId) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      window.setTimeout(() => {
-        dragRef.current = null;
-      }, 0);
-    }
+    scrollContainer.scrollLeft += event.deltaY;
   }
 
   return (
@@ -1081,17 +1287,8 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       onTouchStart={stopTouchPropagation}
       onTouchMove={stopTouchPropagation}
       onTouchEnd={stopTouchPropagation}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-      onPointerCancel={handlePointerEnd}
-      onClickCapture={(event) => {
-        if (dragRef.current?.moved) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-      }}
-      className="-mx-5 flex touch-pan-x cursor-grab gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 active:cursor-grabbing [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      onWheel={handleWheel}
+      className="-mx-5 flex touch-pan-x gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {children}
     </div>
@@ -1351,7 +1548,7 @@ function CharacterTab({
   );
 
   return (
-    <div>
+    <div className="pb-[calc(7rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="인물 목록"
         description="인물을 선택해 자유 심문을 진행하세요."
@@ -1441,14 +1638,16 @@ function NoteTab({
   setAriaInput,
   ariaChatLog,
   isSendingAria,
+  isWaitingForAriaReply,
   onSendAria,
 }: {
   note: string;
   setNote: (note: string) => void;
   ariaInput: string;
   setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
+  ariaChatLog: AnimatedChatMessage[];
   isSendingAria: boolean;
+  isWaitingForAriaReply: boolean;
   onSendAria: () => void;
 }) {
   return (
@@ -1479,6 +1678,7 @@ function NoteTab({
         setAriaInput={setAriaInput}
         ariaChatLog={ariaChatLog}
         isSendingAria={isSendingAria}
+        isWaitingForAriaReply={isWaitingForAriaReply}
         onSendAria={onSendAria}
       />
     </div>
@@ -1490,12 +1690,14 @@ function AriaSupportPanel({
   setAriaInput,
   ariaChatLog,
   isSendingAria,
+  isWaitingForAriaReply,
   onSendAria,
 }: {
   ariaInput: string;
   setAriaInput: (value: string) => void;
-  ariaChatLog: ChatMessage[];
+  ariaChatLog: AnimatedChatMessage[];
   isSendingAria: boolean;
+  isWaitingForAriaReply: boolean;
   onSendAria: () => void;
 }) {
   return (
@@ -1517,7 +1719,10 @@ function AriaSupportPanel({
       </div>
 
       <div className="mt-3 min-h-0 flex-1 overflow-hidden">
-        <ChatMessageList chatLog={ariaChatLog} isSending={isSendingAria} />
+        <ChatMessageList
+          chatLog={ariaChatLog}
+          isSending={isWaitingForAriaReply}
+        />
       </div>
 
       <form
@@ -1555,14 +1760,16 @@ function CharacterChatPanel({
   setChatInput,
   chatLog,
   isSending,
+  isWaitingForReply,
   onSend,
   onClose,
 }: {
   character: Character;
   chatInput: string;
   setChatInput: (value: string) => void;
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSending: boolean;
+  isWaitingForReply: boolean;
   onSend: () => void;
   onClose: () => void;
 }) {
@@ -1597,7 +1804,7 @@ function CharacterChatPanel({
         </div>
       </div>
 
-      <ChatMessageList chatLog={chatLog} isSending={isSending} />
+      <ChatMessageList chatLog={chatLog} isSending={isWaitingForReply} />
 
       <form
         onSubmit={(event) => {
@@ -1632,10 +1839,11 @@ function ChatMessageList({
   chatLog,
   isSending,
 }: {
-  chatLog: ChatMessage[];
+  chatLog: AnimatedChatMessage[];
   isSending: boolean;
 }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = chatLog.at(-1);
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -1648,7 +1856,7 @@ function ChatMessageList({
       top: scrollContainer.scrollHeight,
       behavior: "smooth",
     });
-  }, [chatLog.length, isSending]);
+  }, [chatLog.length, isSending, latestMessage?.text]);
 
   return (
     <div
@@ -1664,13 +1872,18 @@ function ChatMessageList({
           }`}
         >
           <div
-            className={`max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-6 ${
+            className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6 ${
               message.speaker === "player"
                 ? "bg-zinc-100 text-black"
                 : "bg-transparent text-zinc-100"
             }`}
           >
             {message.text}
+            {message.isTyping && (
+              <span className="ml-0.5 inline-block animate-pulse text-zinc-400">
+                ▍
+              </span>
+            )}
           </div>
         </div>
       ))}

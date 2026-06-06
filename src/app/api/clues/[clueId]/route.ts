@@ -9,6 +9,14 @@ export async function POST(
   context: { params: Promise<{ clueId: string }> }
 ) {
   const playerId = getPlayerIdFromRequest(request);
+
+  if (!playerId) {
+    return NextResponse.json(
+      { detail: "X-User-Id header is required" },
+      { status: 422 },
+    );
+  }
+
   const { clueId } = await context.params;
   const numericClueId = Number(clueId);
 
@@ -20,10 +28,12 @@ export async function POST(
 
   if (!result) {
     return NextResponse.json(
-      { message: "단서를 찾을 수 없거나 아직 해금되지 않았습니다." },
-      { status: 404 }
+      { detail: `Clue ${numericClueId} not found` },
+      { status: 404 },
     );
   }
 
-  return NextResponse.json(result);
+  return NextResponse.json({
+    message: `Clue ${numericClueId} state updated successfully.`,
+  });
 }

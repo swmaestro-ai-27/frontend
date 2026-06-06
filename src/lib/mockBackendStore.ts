@@ -76,15 +76,19 @@ function createStore(): Store {
 function normalizePlayerId(playerId?: string | null) {
   const normalized = playerId?.trim().slice(0, 80);
 
-  return normalized || DEFAULT_PLAYER_ID;
+  return normalized || null;
 }
 
 export function getPlayerIdFromRequest(request: Request) {
-  return normalizePlayerId(request.headers.get("x-player-id"));
+  return normalizePlayerId(
+    request.headers.get("x-user-id") ||
+      request.headers.get("user-id") ||
+      request.headers.get("user_id"),
+  );
 }
 
 export function getStore(playerId?: string | null) {
-  const storeKey = normalizePlayerId(playerId);
+  const storeKey = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   if (!globalThis.__demoDayIncidentStores) {
     globalThis.__demoDayIncidentStores = new Map<string, Store>();
@@ -103,7 +107,7 @@ export function getStore(playerId?: string | null) {
 }
 
 export function resetStore(playerId?: string | null) {
-  const storeKey = normalizePlayerId(playerId);
+  const storeKey = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   if (!globalThis.__demoDayIncidentStores) {
     globalThis.__demoDayIncidentStores = new Map<string, Store>();
@@ -141,10 +145,6 @@ export function markClueInteracted(clueId: number, playerId?: string | null) {
     return null;
   }
 
-  if (!store.unlockedClueIds.has(clueId)) {
-    return null;
-  }
-
   store.interactedClueIds.add(clueId);
   unlockTarget(store, clue.nextUnlock);
 
@@ -157,8 +157,10 @@ export function markClueInteracted(clueId: number, playerId?: string | null) {
 
 export function getClueInteractions(playerId?: string | null) {
   const store = getStore(playerId);
+  const userId = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   return clues.map((clue) => ({
+    user_id: userId,
     clue_id: clue.id,
     interacted: store.interactedClueIds.has(clue.id),
     unlocked: store.unlockedClueIds.has(clue.id),
@@ -173,13 +175,6 @@ export function markCharacterInteracted(
   const character = getCharacterById(characterId);
 
   if (!character) {
-    return null;
-  }
-
-  if (
-    character.id !== ariaAgent.id &&
-    !store.unlockedCharacterIds.has(characterId)
-  ) {
     return null;
   }
 
@@ -235,8 +230,10 @@ export function probeRecoveredTrace(playerId?: string | null) {
 
 export function getCharacterInteractions(playerId?: string | null) {
   const store = getStore(playerId);
+  const userId = normalizePlayerId(playerId) ?? DEFAULT_PLAYER_ID;
 
   return interrogatableCharacters.map((character) => ({
+    user_id: userId,
     character_id: character.id,
     interacted: store.interactedCharacterIds.has(character.id),
     unlocked: store.unlockedCharacterIds.has(character.id),
@@ -277,36 +274,10 @@ export function getMessagesForCharacter(
   playerId?: string | null,
 ) {
   const store = getStore(playerId);
-  const character = getCharacterById(characterId);
-
-  if (!character) {
-    return null;
-  }
-
-  if (
-    character.id !== ariaAgent.id &&
-    !store.unlockedCharacterIds.has(characterId)
-  ) {
-    return null;
-  }
 
   const currentMessages = store.messagesByCharacterId.get(characterId);
 
-  if (currentMessages && currentMessages.length > 0) {
-    return currentMessages;
-  }
-
-  const firstMessage = createMessage({
-    characterId,
-    sender: "character",
-    senderName: character.name,
-    content: character.firstMessage,
-    playerId,
-  });
-
-  store.messagesByCharacterId.set(characterId, [firstMessage]);
-
-  return [firstMessage];
+  return currentMessages ?? [];
 }
 
 function toConversationMessages(messages: ApiMessage[]): ConversationMessage[] {
@@ -331,9 +302,7 @@ export async function appendUserMessageAndGenerateReply({
 
   if (
     !character ||
-    !persona ||
-    (character.id !== ariaAgent.id &&
-      !store.unlockedCharacterIds.has(characterId))
+    !persona
   ) {
     return null;
   }

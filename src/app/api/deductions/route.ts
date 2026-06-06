@@ -6,6 +6,14 @@ import {
 
 export async function POST(request: Request) {
   const playerId = getPlayerIdFromRequest(request);
+
+  if (!playerId) {
+    return NextResponse.json(
+      { detail: "X-User-Id header is required" },
+      { status: 422 },
+    );
+  }
+
   const body = (await request.json().catch(() => null)) as
     | {
         content?: string;
