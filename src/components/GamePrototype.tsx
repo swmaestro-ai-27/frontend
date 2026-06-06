@@ -1573,10 +1573,10 @@ function AriaEvidencePanel({
       )}
 
       <div className="mt-4 rounded-xl border border-zinc-800 bg-black p-3">
-        <p className="text-xs text-zinc-600">최종 추리 대상</p>
+        <p className="text-xs text-zinc-600">기록 상태</p>
         <p className="mt-1 text-sm leading-6 text-zinc-400">
-          ARIA는 심문 대상이 아니라 사건 원인 후보입니다. 최종 추리에서 ARIA를
-          지목하고 핵심 단서를 제출할 수 있습니다.
+          ARIA는 확인된 단서의 안내 기록만 제공합니다. 아직 복구되지 않은
+          기록은 조사 진행에 따라 순차적으로 드러납니다.
         </p>
       </div>
     </section>
