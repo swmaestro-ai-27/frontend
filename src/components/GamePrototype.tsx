@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   caseInfo,
+  ARIA_CHARACTER_ID,
   clues,
   deductionTargets,
   endingEvents,
@@ -1746,6 +1747,13 @@ function FinalScreen({
   const availableEvidence = clues.filter((clue) =>
     interactedClueIds.includes(clue.id),
   );
+  const hasCollectedAllClues = clues.every((clue) =>
+    interactedClueIds.includes(clue.id),
+  );
+  const availableDeductionTargets = deductionTargets.filter(
+    (character) =>
+      character.id !== ARIA_CHARACTER_ID || hasCollectedAllClues,
+  );
 
   return (
     <section className="min-h-dvh overflow-y-auto px-4 py-4 min-[390px]:px-5 min-[390px]:py-6">
@@ -1755,7 +1763,7 @@ function FinalScreen({
         <section>
           <h2 className="mb-3 text-sm font-black text-zinc-300">범인 선택</h2>
           <div className="grid grid-cols-2 gap-2">
-            {deductionTargets.map((character) => {
+            {availableDeductionTargets.map((character) => {
               const active = deduction.character === character.id;
 
               return (
