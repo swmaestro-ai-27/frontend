@@ -1190,7 +1190,6 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       previousX: event.clientX,
       moved: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -1224,7 +1223,6 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       return;
     }
 
-    event.currentTarget.releasePointerCapture(event.pointerId);
     dragRef.current = null;
 
     if (drag.moved) {
