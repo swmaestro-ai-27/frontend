@@ -46,9 +46,9 @@ type Store = {
 const DEFAULT_PLAYER_ID = "anonymous";
 const TRACE_UNLOCK_THRESHOLD = 4;
 const TRACE_PROBE_MESSAGES = [
-  "이 기록은 조사와 관련성이 낮습니다.",
   "현재 접근 권한으로는 열람할 수 없습니다.",
-  "…",
+  "열람할 수 없습니다.",
+  "열람하지 마.",
   "삭제된 Orchestrator 세션 일부를 복구합니다...",
 ];
 
@@ -187,15 +187,6 @@ export function markCharacterInteracted(
 
 export function probeRecoveredTrace(playerId?: string | null) {
   const store = getStore(playerId);
-
-  if (!store.interactedClueIds.has(6)) {
-    return {
-      attempt: store.traceProbeCount,
-      unlocked: false,
-      clueId: RECOVERED_TRACE_CLUE_ID,
-      message: "먼저 원본 경고 기록을 끝까지 확인해야 합니다.",
-    };
-  }
 
   if (store.unlockedClueIds.has(RECOVERED_TRACE_CLUE_ID)) {
     return {
