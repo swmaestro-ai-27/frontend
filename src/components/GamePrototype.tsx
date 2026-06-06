@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import {
+  type PointerEvent,
   type ReactNode,
   type WheelEvent,
   useEffect,
@@ -1038,7 +1039,9 @@ function MainScreen({
       >
         <div
           key={isCharacterChatOpen ? "character-chat" : mainTab}
-          className={`${animationClass} h-full`}
+          className={`${animationClass} ${
+            isCharacterChatOpen ? "h-full" : "min-h-full"
+          }`}
         >
           {mainTab === "home" && (
             <HomeTab
@@ -1100,9 +1103,71 @@ function MainScreen({
 
 function HorizontalScrollRow({ children }: { children: ReactNode }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    previousX: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   function stopTouchPropagation(event: { stopPropagation: () => void }) {
     event.stopPropagation();
+  }
+
+  function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== "mouse" || event.button !== 0) {
+      return;
+    }
+
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      previousX: event.clientX,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    const scrollContainer = scrollRef.current;
+
+    if (!drag || !scrollContainer || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const totalDeltaX = event.clientX - drag.startX;
+    const deltaX = event.clientX - drag.previousX;
+
+    if (Math.abs(totalDeltaX) > 6) {
+      drag.moved = true;
+      suppressNextClickRef.current = true;
+    }
+
+    if (drag.moved) {
+      scrollContainer.scrollLeft -= deltaX;
+      event.preventDefault();
+    }
+
+    drag.previousX = event.clientX;
+  }
+
+  function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+
+    if (drag?.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    dragRef.current = null;
+
+    if (drag.moved) {
+      window.setTimeout(() => {
+        suppressNextClickRef.current = false;
+      }, 150);
+    }
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -1113,6 +1178,7 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
     }
 
     scrollContainer.scrollLeft += event.deltaY;
+    event.preventDefault();
   }
 
   return (
@@ -1122,8 +1188,21 @@ function HorizontalScrollRow({ children }: { children: ReactNode }) {
       onTouchStart={stopTouchPropagation}
       onTouchMove={stopTouchPropagation}
       onTouchEnd={stopTouchPropagation}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
       onWheel={handleWheel}
-      className="-mx-5 flex touch-pan-x gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      onClickCapture={(event) => {
+        if (!suppressNextClickRef.current) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        suppressNextClickRef.current = false;
+      }}
+      className="-mx-5 flex touch-pan-x cursor-grab gap-3 overflow-x-auto overscroll-x-contain px-5 pb-2 active:cursor-grabbing [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {children}
     </div>
@@ -1325,7 +1404,7 @@ function ClueTab({
   );
 
   return (
-    <div>
+    <div className="pb-[calc(7rem_+_env(safe-area-inset-bottom))]">
       <SectionTitle
         title="단서 목록"
         description="카드를 눌러 자세한 내용을 확인하세요."
