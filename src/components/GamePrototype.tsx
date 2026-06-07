@@ -56,6 +56,7 @@ const DEFAULT_ARIA_MESSAGE = "새로운 단서를 확인해보세요.";
 const MAIN_TABS: MainTab[] = ["home", "clue", "character", "note"];
 const INTRO_COMPLETE_STORAGE_KEY = "demo-day-incident-intro-complete";
 const ARIA_MESSAGE_STORAGE_KEY = "mystery-aria-message";
+const ARIA_DIALOGUE_VIEWED_STORAGE_KEY = "mystery-aria-dialogue-viewed";
 const NOTE_STORAGE_KEY = "mystery-note";
 const CHAT_TYPING_INTERVAL_MS = 18;
 const CHAT_TYPING_MAX_TICKS = 110;
@@ -85,8 +86,29 @@ const RECOVERED_TRACE_TRANSLATION_LINES = [
   "권한 롤백 시도 이후 인간 개입 위험이 증가함.",
 ];
 
+type AriaDialogueOverlayState = {
+  messages: string[];
+};
+
 function addUniqueId(ids: number[], id: number) {
   return ids.includes(id) ? ids : [...ids, id];
+}
+
+function getStoredAriaDialogueKeys() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const storedValue = localStorage.getItem(ARIA_DIALOGUE_VIEWED_STORAGE_KEY);
+    const parsedValue: unknown = storedValue ? JSON.parse(storedValue) : [];
+
+    return Array.isArray(parsedValue)
+      ? parsedValue.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 function deriveUnlockedIds(
@@ -178,6 +200,11 @@ export default function GamePrototype() {
       localStorage.getItem(ARIA_MESSAGE_STORAGE_KEY) ?? DEFAULT_ARIA_MESSAGE
     );
   });
+  const [viewedAriaDialogueKeys, setViewedAriaDialogueKeys] = useState<
+    string[]
+  >(getStoredAriaDialogueKeys);
+  const [ariaDialogueOverlay, setAriaDialogueOverlay] =
+    useState<AriaDialogueOverlayState | null>(null);
   const [note, setNote] = useState(() => {
     if (typeof window === "undefined") {
       return "";
@@ -265,6 +292,29 @@ export default function GamePrototype() {
     }
 
     setUnlockedCharacterIds((prev) => addUniqueId(prev, target.id));
+  }
+
+  function showAriaDialogue(messages: string[]) {
+    if (messages.length === 0) {
+      return;
+    }
+
+    setAriaDialogueOverlay({ messages });
+  }
+
+  function showAriaDialogueOnce(key: string, messages: string[]) {
+    if (messages.length === 0 || viewedAriaDialogueKeys.includes(key)) {
+      return;
+    }
+
+    const nextViewedKeys = [...viewedAriaDialogueKeys, key];
+
+    setViewedAriaDialogueKeys(nextViewedKeys);
+    localStorage.setItem(
+      ARIA_DIALOGUE_VIEWED_STORAGE_KEY,
+      JSON.stringify(nextViewedKeys),
+    );
+    showAriaDialogue(messages);
   }
 
   function clearCharacterTypingTimer(characterId: number) {
@@ -376,6 +426,7 @@ export default function GamePrototype() {
 
     setSelectedClue(clue);
     setAriaMessage(clue.ariaScripts[0] ?? DEFAULT_ARIA_MESSAGE);
+    showAriaDialogueOnce(`clue:${clue.id}`, clue.ariaScripts);
 
     if (!interactedClueIds.includes(clue.id)) {
       setInteractedClueIds((prev) => addUniqueId(prev, clue.id));
@@ -411,6 +462,7 @@ export default function GamePrototype() {
       const result = await gameApi.probeRecoveredTrace();
 
       setAriaMessage(result.message);
+      showAriaDialogue([result.message]);
 
       if (!result.unlocked) {
         return result.message;
@@ -438,8 +490,12 @@ export default function GamePrototype() {
       return result.message;
     } catch (error) {
       console.error("[GamePrototype] trace 복구 실패:", error);
-      setAriaMessage("현재 접근 권한으로는 열람할 수 없습니다.");
-      return "현재 접근 권한으로는 열람할 수 없습니다.";
+      const fallbackMessage = "현재 접근 권한으로는 열람할 수 없습니다.";
+
+      setAriaMessage(fallbackMessage);
+      showAriaDialogue([fallbackMessage]);
+
+      return fallbackMessage;
     }
   }
 
@@ -451,6 +507,10 @@ export default function GamePrototype() {
     setSelectedCharacter(character);
     setMainTab("character");
     setAriaMessage(character.ariaScripts[0] ?? DEFAULT_ARIA_MESSAGE);
+    showAriaDialogueOnce(
+      `character:${character.id}`,
+      character.ariaScripts,
+    );
 
     if (!interactedCharacterIds.includes(character.id)) {
       setInteractedCharacterIds((prev) => addUniqueId(prev, character.id));
@@ -636,6 +696,7 @@ export default function GamePrototype() {
 
     localStorage.removeItem(INTRO_COMPLETE_STORAGE_KEY);
     localStorage.removeItem(ARIA_MESSAGE_STORAGE_KEY);
+    localStorage.removeItem(ARIA_DIALOGUE_VIEWED_STORAGE_KEY);
     localStorage.removeItem(NOTE_STORAGE_KEY);
 
     setScreen("intro");
@@ -647,6 +708,8 @@ export default function GamePrototype() {
     setUnlockedClueIds([...INITIAL_UNLOCKED_CLUE_IDS]);
     setUnlockedCharacterIds([...INITIAL_UNLOCKED_CHARACTER_IDS]);
     setAriaMessage(DEFAULT_ARIA_MESSAGE);
+    setViewedAriaDialogueKeys([]);
+    setAriaDialogueOverlay(null);
     setNote("");
     setChatInput("");
     setChatLogs({});
@@ -723,6 +786,13 @@ export default function GamePrototype() {
             clue={selectedClue}
             onClose={() => setSelectedClue(null)}
             onTraceRefClick={probeTraceReference}
+          />
+        )}
+
+        {ariaDialogueOverlay && (
+          <AriaDialogueOverlay
+            messages={ariaDialogueOverlay.messages}
+            onClose={() => setAriaDialogueOverlay(null)}
           />
         )}
       </div>
@@ -2141,7 +2211,6 @@ function ClueModal({
   onTraceRefClick: () => Promise<string>;
 }) {
   const [displayedText, setDisplayedText] = useState("");
-  const [traceMessage, setTraceMessage] = useState<string | null>(null);
   const descriptionPanelRef = useRef<HTMLDivElement | null>(null);
   const typingTimerRef = useRef<number | null>(null);
 
@@ -2158,23 +2227,7 @@ function ClueModal({
   }
 
   async function handleTraceRefClick() {
-    const nextTraceMessage = await onTraceRefClick();
-    setTraceMessage(nextTraceMessage);
-  }
-
-  function scrollDescriptionPanelToBottom() {
-    window.requestAnimationFrame(() => {
-      const descriptionPanel = descriptionPanelRef.current;
-
-      if (!descriptionPanel) {
-        return;
-      }
-
-      descriptionPanel.scrollTo({
-        top: descriptionPanel.scrollHeight,
-        behavior: "smooth",
-      });
-    });
+    await onTraceRefClick();
   }
 
   useEffect(() => {
@@ -2195,14 +2248,6 @@ function ClueModal({
       clearTypingTimer();
     };
   }, [clue.description]);
-
-  useEffect(() => {
-    if (!traceMessage) {
-      return;
-    }
-
-    scrollDescriptionPanelToBottom();
-  }, [traceMessage]);
 
   useEffect(() => {
     const descriptionPanel = descriptionPanelRef.current;
@@ -2280,19 +2325,54 @@ function ClueModal({
               <span className="ml-0.5 animate-pulse text-zinc-300">▍</span>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          {traceMessage && (
-            <div className="mt-4 rounded-2xl border border-sky-500/30 bg-sky-950/20 p-3">
-              <p className="text-[11px] font-black tracking-[0.18em] text-sky-400">
-                ARIA
-              </p>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-sky-100">
-                {traceMessage}
-              </p>
-            </div>
-          )}
+function AriaDialogueOverlay({
+  messages,
+  onClose,
+}: {
+  messages: string[];
+  onClose: () => void;
+}) {
+  const [messageIndex, setMessageIndex] = useState(0);
+  const currentMessage = messages[messageIndex];
+  const isLastMessage = messageIndex === messages.length - 1;
+
+  function advanceDialogue() {
+    if (isLastMessage) {
+      onClose();
+      return;
+    }
+
+    setMessageIndex((prev) => prev + 1);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex bg-black">
+      <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col justify-center px-4 py-6 min-[390px]:px-5">
+        <div className="relative mx-auto mb-10 h-24 w-24 opacity-80">
+          <Image
+            src={introEvent.ariaLogoImageUrl}
+            alt=""
+            fill
+            unoptimized
+            sizes="96px"
+            className="object-contain"
+          />
         </div>
 
+        <CutsceneText
+          key={messageIndex}
+          speaker="ARIA"
+          text={currentMessage}
+          isLastStep={isLastMessage}
+          lastStepLabel="클릭해서 닫기"
+          onAdvance={advanceDialogue}
+        />
       </div>
     </div>
   );
